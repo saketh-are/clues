@@ -1,0 +1,10 @@
+[package]
+name = "clues-core"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+name = "clues_core"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
