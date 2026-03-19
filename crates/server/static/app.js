@@ -17,6 +17,12 @@ const errorMessageEl = document.querySelector("#error-message");
 const errorDismissButton = document.querySelector("#error-dismiss");
 const startModalEl = document.querySelector("#start-modal");
 const startButton = document.querySelector("#start-button");
+const confirmModalEl = document.querySelector("#confirm-modal");
+const confirmBackdropEl = document.querySelector("#confirm-backdrop");
+const confirmTitleEl = document.querySelector("#confirm-title");
+const confirmMessageEl = document.querySelector("#confirm-message");
+const confirmAcceptButton = document.querySelector("#confirm-accept");
+const confirmCancelButton = document.querySelector("#confirm-cancel");
 const finishModalEl = document.querySelector("#finish-modal");
 const finishBackdropEl = document.querySelector("#finish-backdrop");
 const finishMessageEl = document.querySelector("#finish-message");
@@ -27,6 +33,7 @@ const noteColors = new Set(["yellow", "red", "green"]);
 const invalidMoveMessage = "⚠️ Not enough evidence!";
 const roleEmojis = {
   Artist: "🧑‍🎨",
+  Baker: "👨‍🍳🥖",
   Builder: "👷",
   Cook: "🧑‍🍳",
   Detective: "🕵️",
@@ -69,6 +76,7 @@ const state = {
   timerStartedAt: null,
   timerCompletedAt: null,
   completionAcknowledged: false,
+  pendingConfirmAction: null,
 };
 
 function normalizeSeed(value) {
@@ -285,6 +293,7 @@ function openFinishModal() {
   }
 
   closeGuessModal();
+  closeConfirmModal();
   closeErrorModal();
   closeStartModal();
   const completedAt = state.timerCompletedAt ?? Date.now();
@@ -315,6 +324,49 @@ function startPuzzle() {
   }
 
   closeStartModal();
+}
+
+function openConfirmModal(action) {
+  closeGuessModal();
+  closeErrorModal();
+  closeFinishModal();
+  state.pendingConfirmAction = action;
+  confirmAcceptButton.className = "button button-secondary";
+  confirmCancelButton.className = "button button-secondary";
+  confirmCancelButton.textContent = "Keep Playing";
+
+  if (action === "clear") {
+    confirmTitleEl.textContent = "Clear this puzzle?";
+    confirmMessageEl.textContent = "This will wipe your current progress for this seed.";
+    confirmAcceptButton.textContent = "Clear";
+    confirmCancelButton.classList.add("button-recommended");
+  } else {
+    confirmTitleEl.textContent = "Load a new puzzle?";
+    confirmMessageEl.textContent = "This will leave the current puzzle. Your progress will be saved.";
+    confirmAcceptButton.textContent = "New Puzzle";
+    confirmCancelButton.classList.add("button-recommended");
+  }
+
+  confirmModalEl.hidden = false;
+}
+
+function closeConfirmModal() {
+  state.pendingConfirmAction = null;
+  confirmModalEl.hidden = true;
+}
+
+async function confirmPendingAction() {
+  const action = state.pendingConfirmAction;
+  closeConfirmModal();
+
+  if (action === "clear") {
+    await clearBoard();
+    return;
+  }
+
+  if (action === "new") {
+    await loadPuzzle();
+  }
 }
 
 function completePuzzleIfNeeded() {
@@ -365,6 +417,7 @@ async function loadPuzzle(seed, options = {}) {
   updateUrlSeed(puzzle.seed);
   resetShareButton();
   closeGuessModal();
+  closeConfirmModal();
   closeErrorModal();
   closeStartModal();
   closeFinishModal();
@@ -704,6 +757,7 @@ function closeGuessModal() {
 
 function openErrorModal(title, message = "") {
   closeGuessModal();
+  closeConfirmModal();
   closeFinishModal();
   errorTitleEl.textContent = title;
   errorMessageEl.textContent = message;
@@ -717,6 +771,7 @@ function closeErrorModal() {
 
 function openStartModal() {
   closeGuessModal();
+  closeConfirmModal();
   closeErrorModal();
   closeFinishModal();
   startModalEl.hidden = false;
@@ -756,12 +811,8 @@ function showGuessError(error) {
   openErrorModal(error.message);
 }
 
-newRandomButton.addEventListener("click", async () => {
-  try {
-    await loadPuzzle();
-  } catch (error) {
-    openErrorModal(error.message);
-  }
+newRandomButton.addEventListener("click", () => {
+  openConfirmModal("new");
 });
 
 shareButton.addEventListener("click", async () => {
@@ -774,15 +825,20 @@ shareButton.addEventListener("click", async () => {
   }
 });
 
-clearButton.addEventListener("click", async () => {
+clearButton.addEventListener("click", () => {
+  openConfirmModal("clear");
+});
+guessBackdropEl.addEventListener("click", closeGuessModal);
+guessCancelButton.addEventListener("click", closeGuessModal);
+confirmBackdropEl.addEventListener("click", closeConfirmModal);
+confirmCancelButton.addEventListener("click", closeConfirmModal);
+confirmAcceptButton.addEventListener("click", async () => {
   try {
-    await clearBoard();
+    await confirmPendingAction();
   } catch (error) {
     openErrorModal(error.message);
   }
 });
-guessBackdropEl.addEventListener("click", closeGuessModal);
-guessCancelButton.addEventListener("click", closeGuessModal);
 errorBackdropEl.addEventListener("click", closeErrorModal);
 errorDismissButton.addEventListener("click", closeErrorModal);
 startButton.addEventListener("click", startPuzzle);

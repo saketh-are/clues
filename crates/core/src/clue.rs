@@ -72,6 +72,10 @@ impl fmt::Display for Column {
     }
 }
 
+const fn display_row(row: u8) -> u8 {
+    row.saturating_add(1)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Line {
@@ -82,7 +86,7 @@ pub enum Line {
 impl fmt::Display for Line {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Row(row) => write!(f, "row {row}"),
+            Self::Row(row) => write!(f, "row {}", display_row(*row)),
             Self::Col(col) => write!(f, "col {col}"),
         }
     }
@@ -163,7 +167,8 @@ impl CellSelector {
                 filter.suffix(),
             ),
             Self::Row { row } => format!(
-                "Row {row} has {}{}",
+                "Row {} has {}{}",
+                display_row(*row),
                 count.describe(&format!("{answer}s")),
                 filter.suffix(),
             ),
@@ -626,7 +631,7 @@ mod tests {
             filter: CellFilter::Any,
         };
 
-        assert_eq!(clue.text(), "Row 2 has at least 2 innocents");
+        assert_eq!(clue.text(), "Row 3 has at least 2 innocents");
     }
 
     #[test]
@@ -638,7 +643,7 @@ mod tests {
             filter: CellFilter::Edge,
         };
 
-        assert_eq!(clue.text(), "Row 2 has 2 innocents on the edges");
+        assert_eq!(clue.text(), "Row 3 has 2 innocents on the edges");
     }
 
     #[test]
@@ -677,7 +682,7 @@ mod tests {
             line: Line::Row(2),
         };
 
-        assert_eq!(clue.text(), "all criminals in row 2 are connected");
+        assert_eq!(clue.text(), "all criminals in row 3 are connected");
     }
 
     #[test]
@@ -801,7 +806,7 @@ mod tests {
 
         assert_eq!(
             clue.text(),
-            "there are more innocents in row 1 than in col B",
+            "there are more innocents in row 2 than in col B",
         );
     }
 
@@ -858,7 +863,7 @@ mod tests {
 
         assert_eq!(
             clue.text(),
-            "Exactly 1 person in row 2 has 4 innocent neighbors",
+            "Exactly 1 person in row 3 has 4 innocent neighbors",
         );
     }
 

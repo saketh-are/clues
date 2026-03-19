@@ -46,13 +46,14 @@ impl fmt::Display for Answer {
 
 pub type Name = String;
 
-pub const NAMES: [&str; 78] = [
-    "Alex", "Albert", "Anand", "Ben", "Bianca", "Blake", "Clara", "Cole", "Cyrus", "Daphne",
-    "Dean", "Diego", "Eden", "Elias", "Eva", "Felix", "Finn", "Fiona", "Gavin", "Gia", "Grace",
-    "Hana", "Hazel", "Hugo", "Iris", "Isaac", "Ivy", "Jade", "Jasper", "June", "Kai", "Kira",
-    "Knox", "Leo", "Luna", "Lydia", "Maya", "Milo", "Mira", "Nadia", "Noah", "Nora", "Omar",
-    "Opal", "Owen", "Parker", "Piper", "Priya", "Quentin", "Quinn", "Quincy", "Rafael", "Rowan",
-    "Ruby", "Sadie", "Silas", "Sloane", "Tessa", "Theo", "Tristan", "Uma", "Uri", "Ursula", "Vera",
+pub const NAMES: [&str; 87] = [
+    "Ajay", "Akhil", "Alex", "Albert", "Anand", "Ben", "Bianca", "Blake", "Clara", "Cole",
+    "Coriander", "Cyrus", "Daphne", "Dasith", "Dean", "Diego", "Eddy", "Eden", "Elias", "Eva",
+    "Felix", "Finn", "Fiona", "Gavin", "Gia", "Grace", "Hana", "Hazel", "Hugo", "Iris", "Isaac",
+    "Ivy", "Jade", "Jasper", "June", "Kai", "Kira", "Knox", "Laika", "Leo", "Luna", "Lydia",
+    "Maya", "Milo", "Mira", "Nadia", "Noah", "Nora", "Omar", "Opal", "Owen", "Parker", "Pavan",
+    "Piper", "Priya", "Quentin", "Quinn", "Quincy", "Rafael", "Rowan", "Ruby", "Sadie", "Sid",
+    "Silas", "Sloane", "Tessa", "Theo", "Thrisha", "Tristan", "Uma", "Uri", "Ursula", "Vera",
     "Victor", "Violet", "Willow", "Wren", "Wyatt", "Xander", "Xia", "Ximena", "Yara", "Yasmin",
     "Yuri", "Zane", "Zara", "Zoe",
 ];
@@ -60,8 +61,8 @@ pub const NAMES: [&str; 78] = [
 pub type Role = String;
 
 #[rustfmt::skip]
-pub const ROLES: [&str; 17] = [
-    "Artist", "Builder", "Cook", "Detective", "Doctor", "Farmer", "Firefighter", "Guard",
-    "Judge", "Mechanic", "Nurse", "Pilot", "Police Officer", "Scientist", "Singer", "Teacher",
-    "Technologist",
+pub const ROLES: [&str; 18] = [
+    "Artist", "Baker", "Builder", "Cook", "Detective", "Doctor", "Farmer", "Firefighter",
+    "Guard", "Judge", "Mechanic", "Nurse", "Pilot", "Police Officer", "Scientist", "Singer",
+    "Teacher", "Technologist",
 ];

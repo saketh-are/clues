@@ -699,8 +699,9 @@ mod tests {
     #[test]
     fn direct_relation_can_force_a_single_tile() {
         let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[0][1].name.clone();
         let clues = [Clue::DirectRelation {
-            name: "Albert".to_string(),
+            name: anchor_name,
             answer: Answer::Innocent,
             direction: Direction::Left,
         }];
@@ -715,8 +716,9 @@ mod tests {
     #[test]
     fn impossible_direct_relation_has_no_solution() {
         let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[0][0].name.clone();
         let clues = [Clue::DirectRelation {
-            name: "Alex".to_string(),
+            name: anchor_name,
             answer: Answer::Innocent,
             direction: Direction::Left,
         }];
