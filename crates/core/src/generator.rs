@@ -236,6 +236,10 @@ struct ScoredCandidate {
 struct GenerationInstrumentation {
     candidate_combination_sizes: Vec<usize>,
     selected_combination_sizes: Vec<usize>,
+    candidate_newly_forced_count: usize,
+    candidate_standalone_zero_count: usize,
+    candidate_combination_only_count: usize,
+    candidate_combo_eligible_count: usize,
 }
 
 impl GenerationInstrumentation {
@@ -244,6 +248,10 @@ impl GenerationInstrumentation {
             .extend(other.candidate_combination_sizes);
         self.selected_combination_sizes
             .extend(other.selected_combination_sizes);
+        self.candidate_newly_forced_count += other.candidate_newly_forced_count;
+        self.candidate_standalone_zero_count += other.candidate_standalone_zero_count;
+        self.candidate_combination_only_count += other.candidate_combination_only_count;
+        self.candidate_combo_eligible_count += other.candidate_combo_eligible_count;
     }
 }
 
@@ -354,6 +362,28 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
 
             if !alone.analysis.has_solution {
                 continue;
+            }
+
+            let standalone_forced = forced_unknown_indices(&alone.analysis, known_mask);
+            let combination_only_forced = newly_forced
+                .iter()
+                .copied()
+                .filter(|index| forced_answer_at(&alone.analysis, *index) == ForcedAnswer::Neither)
+                .collect::<Vec<_>>();
+
+            if let Some(stats) = instrumentation.as_deref_mut() {
+                if !newly_forced.is_empty() {
+                    stats.candidate_newly_forced_count += 1;
+                }
+                if standalone_forced.is_empty() {
+                    stats.candidate_standalone_zero_count += 1;
+                }
+                if !combination_only_forced.is_empty() {
+                    stats.candidate_combination_only_count += 1;
+                }
+                if !combination_only_forced.is_empty() && standalone_forced.is_empty() {
+                    stats.candidate_combo_eligible_count += 1;
+                }
             }
 
             let mut effective_clues = current_clues.clone();
@@ -1725,6 +1755,22 @@ mod tests {
             "selected_above_one={} ({:.1}%)",
             selected_above_one,
             selected_above_one as f64 * 100.0 / selected_total as f64
+        );
+        println!(
+            "candidate_newly_forced_count={}",
+            stats.candidate_newly_forced_count
+        );
+        println!(
+            "candidate_standalone_zero_count={}",
+            stats.candidate_standalone_zero_count
+        );
+        println!(
+            "candidate_combination_only_count={}",
+            stats.candidate_combination_only_count
+        );
+        println!(
+            "candidate_combo_eligible_count={}",
+            stats.candidate_combo_eligible_count
         );
         println!("candidate_histogram={candidate_histogram:?}");
         println!("selected_histogram={selected_histogram:?}");
