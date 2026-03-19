@@ -113,6 +113,17 @@ impl CellFilter {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CellSelector {
+    Neighbor { name: Name },
+    Direction { name: Name, direction: Direction },
+    Row { row: u8 },
+    Col { col: Column },
+    Between { first_name: Name, second_name: Name },
+    SharedNeighbor { first_name: Name, second_name: Name },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Count {
@@ -128,6 +139,70 @@ impl Count {
             Self::AtLeast(number) => format!("at least {number} {noun}"),
             Self::Parity(Parity::Odd) => format!("an odd number of {noun}"),
             Self::Parity(Parity::Even) => format!("an even number of {noun}"),
+        }
+    }
+}
+
+impl CellSelector {
+    fn text(&self, answer: Answer, count: Count, filter: CellFilter) -> String {
+        match self {
+            Self::Neighbor { name } => format!(
+                "{name} has {} neighbors{}",
+                count.describe(&answer.to_string()),
+                filter.suffix(),
+            ),
+            Self::Direction { name, direction } => format!(
+                "there are {} {direction} {name}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
+            Self::Row { row } => format!(
+                "Row {row} has {}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
+            Self::Col { col } => format!(
+                "Col {col} has {}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
+            Self::Between {
+                first_name,
+                second_name,
+            } => format!(
+                "there are {} between {first_name} and {second_name}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
+            Self::SharedNeighbor {
+                first_name,
+                second_name,
+            } => format!(
+                "{first_name} and {second_name} share {} neighbors{}",
+                count.describe(&answer.to_string()),
+                filter.suffix(),
+            ),
+        }
+    }
+
+    pub const fn neighbor_offsets(&self) -> &'static [Offset] {
+        match self {
+            Self::Neighbor { .. } | Self::SharedNeighbor { .. } => &TOUCHING_NEIGHBOR_OFFSETS,
+            Self::Direction { .. }
+            | Self::Row { .. }
+            | Self::Col { .. }
+            | Self::Between { .. } => &[],
+        }
+    }
+
+    pub const fn direction_offset(&self) -> Option<Offset> {
+        match self {
+            Self::Direction { direction, .. } => Some(direction.offset()),
+            Self::Neighbor { .. }
+            | Self::Row { .. }
+            | Self::Col { .. }
+            | Self::Between { .. }
+            | Self::SharedNeighbor { .. } => None,
         }
     }
 }
@@ -304,27 +379,8 @@ impl Quantifier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Clue {
-    Neighbor {
-        name: Name,
-        answer: Answer,
-        count: Count,
-        filter: CellFilter,
-    },
-    Direction {
-        name: Name,
-        answer: Answer,
-        direction: Direction,
-        count: Count,
-        filter: CellFilter,
-    },
-    Row {
-        row: u8,
-        answer: Answer,
-        count: Count,
-        filter: CellFilter,
-    },
-    Col {
-        col: Column,
+    CountCells {
+        selector: CellSelector,
         answer: Answer,
         count: Count,
         filter: CellFilter,
@@ -332,19 +388,6 @@ pub enum Clue {
     Connected {
         answer: Answer,
         line: Line,
-    },
-    Between {
-        first_name: Name,
-        second_name: Name,
-        answer: Answer,
-        count: Count,
-    },
-    SharedNeighbor {
-        first_name: Name,
-        second_name: Name,
-        answer: Answer,
-        count: Count,
-        filter: CellFilter,
     },
     DirectRelation {
         name: Name,
@@ -372,70 +415,15 @@ pub enum Clue {
 impl Clue {
     pub fn text(&self) -> String {
         match self {
-            Self::Neighbor {
-                name,
+            Self::CountCells {
+                selector,
                 answer,
                 count,
                 filter,
-            } => format!(
-                "{name} has {} neighbors{}",
-                count.describe(&answer.to_string()),
-                filter.suffix(),
-            ),
-            Self::Direction {
-                name,
-                answer,
-                direction,
-                count,
-                filter,
-            } => format!(
-                "there are {} {direction} {name}{}",
-                count.describe(&format!("{answer}s")),
-                filter.suffix(),
-            ),
-            Self::Row {
-                row,
-                answer,
-                count,
-                filter,
-            } => format!(
-                "Row {row} has {}{}",
-                count.describe(&format!("{answer}s")),
-                filter.suffix(),
-            ),
-            Self::Col {
-                col,
-                answer,
-                count,
-                filter,
-            } => format!(
-                "Col {col} has {}{}",
-                count.describe(&format!("{answer}s")),
-                filter.suffix(),
-            ),
+            } => selector.text(*answer, *count, *filter),
             Self::Connected { answer, line } => {
                 format!("all {answer}s in {line} are connected")
             }
-            Self::Between {
-                first_name,
-                second_name,
-                answer,
-                count,
-            } => format!(
-                "there are {} between {first_name} and {second_name}",
-                count.describe(&format!("{answer}s")),
-            ),
-            Self::SharedNeighbor {
-                first_name,
-                second_name,
-                answer,
-                count,
-                filter,
-            } => format!(
-                "{first_name} and {second_name} share {} neighbors{}",
-                count.describe(&answer.to_string()),
-                filter.suffix(),
-            ),
             Self::DirectRelation {
                 name,
                 answer,
@@ -473,12 +461,8 @@ impl Clue {
 
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
-            Self::Neighbor { .. } | Self::SharedNeighbor { .. } => &TOUCHING_NEIGHBOR_OFFSETS,
-            Self::Direction { .. }
-            | Self::Row { .. }
-            | Self::Col { .. }
-            | Self::Connected { .. }
-            | Self::Between { .. }
+            Self::CountCells { selector, .. } => selector.neighbor_offsets(),
+            Self::Connected { .. }
             | Self::DirectRelation { .. }
             | Self::RoleCount { .. }
             | Self::RolesComparison { .. }
@@ -488,15 +472,9 @@ impl Clue {
 
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
-            Self::Direction { direction, .. } | Self::DirectRelation { direction, .. } => {
-                Some(direction.offset())
-            }
-            Self::Neighbor { .. }
-            | Self::Row { .. }
-            | Self::Col { .. }
-            | Self::Connected { .. }
-            | Self::Between { .. }
-            | Self::SharedNeighbor { .. }
+            Self::CountCells { selector, .. } => selector.direction_offset(),
+            Self::DirectRelation { direction, .. } => Some(direction.offset()),
+            Self::Connected { .. }
             | Self::RoleCount { .. }
             | Self::RolesComparison { .. }
             | Self::Quantified { .. } => None,
@@ -507,8 +485,8 @@ impl Clue {
 #[cfg(test)]
 mod tests {
     use super::{
-        CellFilter, Clue, Column, Comparison, Count, Direction, Line, Parity, PersonGroup,
-        PersonPredicate, Quantifier,
+        CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, Parity,
+        PersonGroup, PersonPredicate, Quantifier,
     };
     use crate::{
         geometry::Offset,
@@ -517,8 +495,10 @@ mod tests {
 
     #[test]
     fn neighbor_renders_number_puzzle_text() {
-        let clue = Clue::Neighbor {
-            name: "Ada".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::Neighbor {
+                name: "Ada".to_string(),
+            },
             answer: Answer::Innocent,
             count: Count::Number(3),
             filter: CellFilter::Any,
@@ -529,8 +509,10 @@ mod tests {
 
     #[test]
     fn neighbor_renders_edge_filtered_parity_puzzle_text() {
-        let clue = Clue::Neighbor {
-            name: "Ada".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::Neighbor {
+                name: "Ada".to_string(),
+            },
             answer: Answer::Innocent,
             count: Count::Parity(Parity::Odd),
             filter: CellFilter::Edge,
@@ -544,10 +526,12 @@ mod tests {
 
     #[test]
     fn direction_renders_number_puzzle_text() {
-        let clue = Clue::Direction {
-            name: "Ada".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::Direction {
+                name: "Ada".to_string(),
+                direction: Direction::Below,
+            },
             answer: Answer::Innocent,
-            direction: Direction::Below,
             count: Count::Number(2),
             filter: CellFilter::Any,
         };
@@ -557,10 +541,12 @@ mod tests {
 
     #[test]
     fn direction_renders_parity_puzzle_text() {
-        let clue = Clue::Direction {
-            name: "Ada".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::Direction {
+                name: "Ada".to_string(),
+                direction: Direction::Below,
+            },
             answer: Answer::Innocent,
-            direction: Direction::Below,
             count: Count::Parity(Parity::Even),
             filter: CellFilter::Any,
         };
@@ -570,8 +556,8 @@ mod tests {
 
     #[test]
     fn row_renders_at_least_puzzle_text() {
-        let clue = Clue::Row {
-            row: 2,
+        let clue = Clue::CountCells {
+            selector: CellSelector::Row { row: 2 },
             answer: Answer::Innocent,
             count: Count::AtLeast(2),
             filter: CellFilter::Any,
@@ -582,8 +568,8 @@ mod tests {
 
     #[test]
     fn row_renders_edge_filtered_number_puzzle_text() {
-        let clue = Clue::Row {
-            row: 2,
+        let clue = Clue::CountCells {
+            selector: CellSelector::Row { row: 2 },
             answer: Answer::Innocent,
             count: Count::Number(2),
             filter: CellFilter::Edge,
@@ -594,8 +580,10 @@ mod tests {
 
     #[test]
     fn neighbor_renders_corner_filtered_puzzle_text() {
-        let clue = Clue::Neighbor {
-            name: "Ada".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::Neighbor {
+                name: "Ada".to_string(),
+            },
             answer: Answer::Innocent,
             count: Count::Parity(Parity::Odd),
             filter: CellFilter::Corner,
@@ -609,8 +597,8 @@ mod tests {
 
     #[test]
     fn col_renders_parity_puzzle_text() {
-        let clue = Clue::Col {
-            col: Column::C,
+        let clue = Clue::CountCells {
+            selector: CellSelector::Col { col: Column::C },
             answer: Answer::Criminal,
             count: Count::Parity(Parity::Even),
             filter: CellFilter::Any,
@@ -641,11 +629,14 @@ mod tests {
 
     #[test]
     fn between_renders_puzzle_text() {
-        let clue = Clue::Between {
-            first_name: "Ada".to_string(),
-            second_name: "Ben".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::Between {
+                first_name: "Ada".to_string(),
+                second_name: "Ben".to_string(),
+            },
             answer: Answer::Innocent,
             count: Count::Number(2),
+            filter: CellFilter::Any,
         };
 
         assert_eq!(clue.text(), "there are 2 innocents between Ada and Ben");
@@ -653,9 +644,11 @@ mod tests {
 
     #[test]
     fn shared_neighbor_renders_puzzle_text() {
-        let clue = Clue::SharedNeighbor {
-            first_name: "Ada".to_string(),
-            second_name: "Ben".to_string(),
+        let clue = Clue::CountCells {
+            selector: CellSelector::SharedNeighbor {
+                first_name: "Ada".to_string(),
+                second_name: "Ben".to_string(),
+            },
             answer: Answer::Innocent,
             count: Count::Parity(Parity::Odd),
             filter: CellFilter::Any,
