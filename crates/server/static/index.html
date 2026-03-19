@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clues</title>
-    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/styles.css?v=20260319c" />
   </head>
   <body>
     <div class="background background-one"></div>
@@ -71,6 +71,26 @@
       </div>
     </div>
 
+    <div id="start-modal" class="modal" hidden>
+      <div id="start-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card start-modal-card" role="dialog" aria-modal="true" aria-label="Start Puzzle">
+        <button id="start-button" class="button button-good start-button" type="button">
+          START
+        </button>
+      </div>
+    </div>
+
+    <div id="finish-modal" class="modal" hidden>
+      <div id="finish-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="finish-title">
+        <h2 id="finish-title" class="modal-title">Puzzle Complete</h2>
+        <p id="finish-message" class="modal-message"></p>
+        <button id="finish-dismiss" class="button button-secondary modal-dismiss" type="button">
+          Done
+        </button>
+      </div>
+    </div>
+
     <template id="cell-template">
       <article class="cell">
         <div class="cell-top">
@@ -86,6 +106,6 @@
       </article>
     </template>
 
-    <script src="/app.js" defer></script>
+    <script src="/app.js?v=20260319c" defer></script>
   </body>
 </html>

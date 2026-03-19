@@ -132,18 +132,21 @@ h1 {
 }
 
 .button-primary {
-  background: linear-gradient(135deg, var(--accent) 0%, #e28d54 100%);
-  color: white;
+  background: rgba(207, 95, 63, 0.16);
+  color: #8d442e;
+  border: 1px solid rgba(207, 95, 63, 0.28);
 }
 
 .button-good {
-  background: linear-gradient(135deg, #3d9a67 0%, #68b884 100%);
-  color: white;
+  background: rgba(45, 122, 83, 0.14);
+  color: #255d40;
+  border: 1px solid rgba(45, 122, 83, 0.24);
 }
 
 .button-bad {
-  background: linear-gradient(135deg, #b94b3d 0%, #d86a56 100%);
-  color: white;
+  background: rgba(180, 60, 47, 0.14);
+  color: #8d3228;
+  border: 1px solid rgba(180, 60, 47, 0.24);
 }
 
 .button-secondary {
@@ -248,7 +251,7 @@ h1 {
 
 .cell-name {
   font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
-  font-size: clamp(0.92rem, 1.9vw, 1.45rem);
+  font-size: clamp(0.98rem, 2.05vw, 1.56rem);
   line-height: 0.92;
   min-width: 0;
   overflow: hidden;
@@ -261,7 +264,7 @@ h1 {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: clamp(0.62rem, 1vw, 0.88rem);
+  font-size: clamp(0.68rem, 1.08vw, 0.95rem);
   color: var(--muted);
 }
 
@@ -289,7 +292,7 @@ h1 {
   justify-content: center;
   text-align: center;
   overflow: hidden;
-  font-size: clamp(0.86rem, 1.25vw, 1.12rem);
+  font-size: clamp(0.92rem, 1.36vw, 1.22rem);
   line-height: 1.08;
   overflow-wrap: anywhere;
 }
@@ -407,8 +410,27 @@ h1 {
   gap: 0.55rem;
 }
 
+.modal .button {
+  min-height: 2.7rem;
+  padding: 0.52rem 0.9rem;
+}
+
 .modal-dismiss {
   width: 100%;
+}
+
+.start-modal-card {
+  place-items: center;
+  padding: 1rem;
+}
+
+.start-button {
+  width: 100%;
+  min-height: 3.25rem;
+  padding: 0.7rem 1.4rem;
+  font-size: 1.08rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
 }
 
 @media (max-width: 720px) {
@@ -452,7 +474,7 @@ h1 {
   }
 
   .cell-name {
-    font-size: clamp(0.74rem, 2vw, 0.98rem);
+    font-size: clamp(0.8rem, 2.2vw, 1.04rem);
   }
 
   .cell-emoji {
@@ -461,11 +483,16 @@ h1 {
 
   .cell-role,
   .cell-position {
-    font-size: clamp(0.46rem, 1.4vw, 0.66rem);
+    font-size: clamp(0.5rem, 1.55vw, 0.72rem);
   }
 
   .cell-clue {
-    font-size: clamp(0.62rem, 1.5vw, 0.82rem);
+    font-size: clamp(0.68rem, 1.68vw, 0.9rem);
     line-height: 1.06;
+  }
+
+  .start-button {
+    min-height: 3rem;
+    font-size: 1rem;
   }
 }

@@ -15,6 +15,12 @@ const errorBackdropEl = document.querySelector("#error-backdrop");
 const errorTitleEl = document.querySelector("#error-title");
 const errorMessageEl = document.querySelector("#error-message");
 const errorDismissButton = document.querySelector("#error-dismiss");
+const startModalEl = document.querySelector("#start-modal");
+const startButton = document.querySelector("#start-button");
+const finishModalEl = document.querySelector("#finish-modal");
+const finishBackdropEl = document.querySelector("#finish-backdrop");
+const finishMessageEl = document.querySelector("#finish-message");
+const finishDismissButton = document.querySelector("#finish-dismiss");
 const progressStoragePrefix = "clues-progress:v1:";
 const noteTapDelayMs = 420;
 const noteColors = new Set(["yellow", "red", "green"]);
@@ -60,6 +66,9 @@ const state = {
   flashTimer: null,
   pendingNoteTap: null,
   shareFeedbackTimer: null,
+  timerStartedAt: null,
+  timerCompletedAt: null,
+  completionAcknowledged: false,
 };
 
 function normalizeSeed(value) {
@@ -125,8 +134,17 @@ function readSavedProgress(seed) {
             noteColors.has(entry[1]),
         )
       : [];
+    const timerStartedAt =
+      Number.isFinite(parsed?.timerStartedAt) && parsed.timerStartedAt >= 0
+        ? parsed.timerStartedAt
+        : null;
+    const timerCompletedAt =
+      Number.isFinite(parsed?.timerCompletedAt) && parsed.timerCompletedAt >= 0
+        ? parsed.timerCompletedAt
+        : null;
+    const completionAcknowledged = parsed?.completionAcknowledged === true;
 
-    return { moves, hiddenClues, notes };
+    return { moves, hiddenClues, notes, timerStartedAt, timerCompletedAt, completionAcknowledged };
   } catch {
     return null;
   }
@@ -147,7 +165,11 @@ function persistProgress() {
 
   const hiddenClues = [...state.hiddenClues];
   const notes = [...state.notes.entries()];
-  if (state.moves.length === 0 && hiddenClues.length === 0 && notes.length === 0) {
+  const hasTimerState =
+    state.timerStartedAt !== null ||
+    state.timerCompletedAt !== null ||
+    state.completionAcknowledged;
+  if (state.moves.length === 0 && hiddenClues.length === 0 && notes.length === 0 && !hasTimerState) {
     clearSavedProgress(state.currentSeed);
     return;
   }
@@ -158,6 +180,9 @@ function persistProgress() {
       moves: state.moves,
       hiddenClues,
       notes,
+      timerStartedAt: state.timerStartedAt,
+      timerCompletedAt: state.timerCompletedAt,
+      completionAcknowledged: state.completionAcknowledged,
     }),
   );
 }
@@ -233,7 +258,81 @@ function flashMentionedTiles(clue) {
   renderBoard();
 }
 
-async function loadPuzzle(seed) {
+function allTilesMarked() {
+  return state.guesses.every((row) => row.every((guess) => guess !== null));
+}
+
+function formatElapsedDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${String(minutes).padStart(2, "0")}m ${String(seconds).padStart(2, "0")}s`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+  }
+
+  return `${seconds}s`;
+}
+
+function openFinishModal() {
+  if (state.timerStartedAt === null) {
+    return;
+  }
+
+  closeGuessModal();
+  closeErrorModal();
+  closeStartModal();
+  const completedAt = state.timerCompletedAt ?? Date.now();
+  const elapsed = formatElapsedDuration(completedAt - state.timerStartedAt);
+  finishMessageEl.textContent = `You finished in ${elapsed}.`;
+  finishModalEl.hidden = false;
+}
+
+function closeFinishModal() {
+  finishModalEl.hidden = true;
+}
+
+function dismissFinishModal() {
+  if (state.timerCompletedAt !== null) {
+    state.completionAcknowledged = true;
+    persistProgress();
+  }
+
+  closeFinishModal();
+}
+
+function startPuzzle() {
+  if (state.timerStartedAt === null) {
+    state.timerStartedAt = Date.now();
+    state.timerCompletedAt = null;
+    state.completionAcknowledged = false;
+    persistProgress();
+  }
+
+  closeStartModal();
+}
+
+function completePuzzleIfNeeded() {
+  if (!allTilesMarked() || state.timerStartedAt === null) {
+    return;
+  }
+
+  if (state.timerCompletedAt === null) {
+    state.timerCompletedAt = Date.now();
+  }
+
+  state.completionAcknowledged = false;
+  persistProgress();
+  openFinishModal();
+}
+
+async function loadPuzzle(seed, options = {}) {
+  const { forceStartModal = false } = options;
   const normalizedSeed = normalizeSeed(seed);
   const query = normalizedSeed === null ? "" : `?seed=${encodeURIComponent(normalizedSeed)}`;
 
@@ -256,6 +355,9 @@ async function loadPuzzle(seed) {
   state.modalCell = null;
   state.hiddenClues = new Set();
   state.flashingTiles = new Set();
+  state.timerStartedAt = null;
+  state.timerCompletedAt = null;
+  state.completionAcknowledged = false;
   clearPendingNoteTap();
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
@@ -264,10 +366,22 @@ async function loadPuzzle(seed) {
   resetShareButton();
   closeGuessModal();
   closeErrorModal();
-  const restoreError = await restoreProgress();
+  closeStartModal();
+  closeFinishModal();
+  const restoreResult = await restoreProgress();
   renderBoard();
-  if (restoreError) {
-    openErrorModal(restoreError);
+  if (restoreResult.error) {
+    openErrorModal(restoreResult.error);
+    return;
+  }
+
+  if (allTilesMarked() && state.timerStartedAt !== null && !state.completionAcknowledged) {
+    openFinishModal();
+    return;
+  }
+
+  if (forceStartModal || state.timerStartedAt === null) {
+    openStartModal();
   }
 }
 
@@ -441,7 +555,17 @@ function handleNoteTap(row, col) {
 async function restoreProgress() {
   const saved = readSavedProgress(state.currentSeed);
   if (!saved) {
-    return null;
+    return { restored: false, error: null };
+  }
+
+  state.timerStartedAt = saved.timerStartedAt;
+  state.timerCompletedAt = saved.timerCompletedAt;
+  state.completionAcknowledged = saved.completionAcknowledged;
+  if (
+    state.timerStartedAt === null &&
+    (saved.moves.length > 0 || saved.hiddenClues.length > 0 || saved.notes.length > 0)
+  ) {
+    state.timerStartedAt = Date.now();
   }
 
   try {
@@ -467,16 +591,33 @@ async function restoreProgress() {
         return Boolean(state.cells[row]?.[col]);
       }),
     );
+    if (allTilesMarked()) {
+      if (state.timerStartedAt === null) {
+        state.timerStartedAt = Date.now();
+      }
+      if (state.timerCompletedAt === null) {
+        state.timerCompletedAt = Date.now();
+      }
+    } else {
+      state.timerCompletedAt = null;
+      state.completionAcknowledged = false;
+    }
     persistProgress();
   } catch {
     state.moves = [];
     state.notes = new Map();
     state.hiddenClues = new Set();
+    state.timerStartedAt = null;
+    state.timerCompletedAt = null;
+    state.completionAcknowledged = false;
     clearSavedProgress(state.currentSeed);
-    return "Saved progress could not be restored and was cleared.";
+    return {
+      restored: false,
+      error: "Saved progress could not be restored and was cleared.",
+    };
   }
 
-  return null;
+  return { restored: true, error: null };
 }
 
 async function setGuess(row, col, nextGuess) {
@@ -503,6 +644,7 @@ async function setGuess(row, col, nextGuess) {
     applyAcceptedGuess(row, col, nextGuess, clue);
     persistProgress();
     closeGuessModal();
+    completePuzzleIfNeeded();
   } finally {
     state.loadingClues.delete(key);
     renderBoard();
@@ -515,12 +657,13 @@ async function clearBoard() {
   clearSavedProgress();
   closeGuessModal();
   closeErrorModal();
+  closeFinishModal();
 
   if (state.currentSeed === null) {
     return;
   }
 
-  await loadPuzzle(state.currentSeed);
+  await loadPuzzle(state.currentSeed, { forceStartModal: true });
 }
 
 function toggleClueVisibility(row, col) {
@@ -561,6 +704,7 @@ function closeGuessModal() {
 
 function openErrorModal(title, message = "") {
   closeGuessModal();
+  closeFinishModal();
   errorTitleEl.textContent = title;
   errorMessageEl.textContent = message;
   errorMessageEl.hidden = message === "";
@@ -569,6 +713,17 @@ function openErrorModal(title, message = "") {
 
 function closeErrorModal() {
   errorModalEl.hidden = true;
+}
+
+function openStartModal() {
+  closeGuessModal();
+  closeErrorModal();
+  closeFinishModal();
+  startModalEl.hidden = false;
+}
+
+function closeStartModal() {
+  startModalEl.hidden = true;
 }
 
 function resetShareButton() {
@@ -630,6 +785,9 @@ guessBackdropEl.addEventListener("click", closeGuessModal);
 guessCancelButton.addEventListener("click", closeGuessModal);
 errorBackdropEl.addEventListener("click", closeErrorModal);
 errorDismissButton.addEventListener("click", closeErrorModal);
+startButton.addEventListener("click", startPuzzle);
+finishBackdropEl.addEventListener("click", dismissFinishModal);
+finishDismissButton.addEventListener("click", dismissFinishModal);
 guessInnocentButton.addEventListener("click", async () => {
   if (!state.modalCell) {
     return;
