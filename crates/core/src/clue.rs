@@ -114,9 +114,10 @@ impl CellFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
 pub enum Count {
     Number(i32),
+    AtLeast(i32),
     Parity(Parity),
 }
 
@@ -124,6 +125,7 @@ impl Count {
     fn describe(self, noun: &str) -> String {
         match self {
             Self::Number(number) => format!("{number} {noun}"),
+            Self::AtLeast(number) => format!("at least {number} {noun}"),
             Self::Parity(Parity::Odd) => format!("an odd number of {noun}"),
             Self::Parity(Parity::Even) => format!("an even number of {noun}"),
         }
@@ -419,6 +421,18 @@ mod tests {
         };
 
         assert_eq!(clue.text(), "there are an even number of innocents below Ada");
+    }
+
+    #[test]
+    fn row_renders_at_least_puzzle_text() {
+        let clue = Clue::Row {
+            row: 2,
+            answer: Answer::Innocent,
+            count: Count::AtLeast(2),
+            filter: CellFilter::Any,
+        };
+
+        assert_eq!(clue.text(), "Row 2 has at least 2 innocents");
     }
 
     #[test]
