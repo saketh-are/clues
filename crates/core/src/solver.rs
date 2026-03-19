@@ -27,6 +27,12 @@ pub struct ClueAnalysis {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SolutionSet {
+    pub analysis: ClueAnalysis,
+    pub assignments: Vec<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveError {
     RaggedBoard,
     WrongCellCount(usize),
@@ -91,55 +97,81 @@ pub fn analyze_puzzle(puzzle: &Puzzle) -> Result<ClueAnalysis, SolveError> {
 }
 
 pub fn analyze_clues(puzzle: &Puzzle, clues: &[Clue]) -> Result<ClueAnalysis, SolveError> {
+    Ok(solve_clues_with_known_mask(puzzle, clues, 0, 0)?.analysis)
+}
+
+pub(crate) fn solve_clues_with_known_mask(
+    puzzle: &Puzzle,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+) -> Result<SolutionSet, SolveError> {
     let context = CompileContext::new(puzzle)?;
     let compiled_clues = clues
         .iter()
         .map(|clue| context.compile_clue(clue))
         .collect::<Result<Vec<_>, _>>()?;
 
-    let mut found_solution = false;
-    let mut always_innocent = context.full_mask;
-    let mut always_criminal = context.full_mask;
+    let known_mask = known_mask & context.full_mask;
+    let known_innocent_mask = known_innocent_mask & known_mask;
+    let mut assignments = Vec::new();
 
     for assignment in 0..=context.full_mask {
+        if assignment & known_mask != known_innocent_mask {
+            continue;
+        }
+
         if compiled_clues
             .iter()
             .all(|clue| context.assignment_satisfies_clue(assignment, clue))
         {
-            found_solution = true;
-            always_innocent &= assignment;
-            always_criminal &= (!assignment) & context.full_mask;
+            assignments.push(assignment);
         }
     }
 
-    let forced_answers = (0..context.board.rows as usize)
-        .map(|row| {
-            (0..context.cols as usize)
-                .map(|col| {
-                    if !found_solution {
-                        return ForcedAnswer::Neither;
-                    }
-
-                    let bit = 1u32 << (row * context.cols as usize + col);
-                    if always_innocent & bit != 0 {
-                        ForcedAnswer::Innocent
-                    } else if always_criminal & bit != 0 {
-                        ForcedAnswer::Criminal
-                    } else {
-                        ForcedAnswer::Neither
-                    }
-                })
-                .collect()
-        })
-        .collect();
-
-    Ok(ClueAnalysis {
-        has_solution: found_solution,
-        forced_answers,
+    Ok(SolutionSet {
+        analysis: context.analysis_from_assignments(&assignments),
+        assignments,
     })
 }
 
 impl CompileContext {
+    fn analysis_from_assignments(&self, assignments: &[BitMask]) -> ClueAnalysis {
+        let mut always_innocent = self.full_mask;
+        let mut always_criminal = self.full_mask;
+
+        for assignment in assignments {
+            always_innocent &= *assignment;
+            always_criminal &= (!assignment) & self.full_mask;
+        }
+
+        let forced_answers = (0..self.board.rows as usize)
+            .map(|row| {
+                (0..self.cols as usize)
+                    .map(|col| {
+                        if assignments.is_empty() {
+                            return ForcedAnswer::Neither;
+                        }
+
+                        let bit = 1u32 << (row * self.cols as usize + col);
+                        if always_innocent & bit != 0 {
+                            ForcedAnswer::Innocent
+                        } else if always_criminal & bit != 0 {
+                            ForcedAnswer::Criminal
+                        } else {
+                            ForcedAnswer::Neither
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        ClueAnalysis {
+            has_solution: !assignments.is_empty(),
+            forced_answers,
+        }
+    }
+
     fn new(puzzle: &Puzzle) -> Result<Self, SolveError> {
         let rows = puzzle.cells.len();
         let cols = puzzle

@@ -1,4 +1,5 @@
 pub mod clue;
+pub mod generator;
 pub mod geometry;
 pub mod puzzle;
 pub mod solver;
@@ -8,6 +9,7 @@ pub use clue::{
     CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, Parity,
     PersonGroup, PersonPredicate, Quantifier,
 };
+pub use generator::{GenerateError, GeneratedPuzzle, generate_puzzle, generate_puzzle_with_seed};
 pub use geometry::{BoardShape, Offset, Position, TOUCHING_NEIGHBOR_OFFSETS};
 pub use puzzle::{Cell, Puzzle, Visibility};
 pub use solver::{analyze_clues, analyze_puzzle, ClueAnalysis, ForcedAnswer, SolveError};
