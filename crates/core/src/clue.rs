@@ -399,6 +399,7 @@ impl Quantifier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Clue {
+    Nonsense,
     CountCells {
         selector: CellSelector,
         answer: Answer,
@@ -441,6 +442,7 @@ pub enum Clue {
 impl Clue {
     pub fn text(&self) -> String {
         match self {
+            Self::Nonsense => "I glued my hat to my head.".to_string(),
             Self::CountCells {
                 selector,
                 answer,
@@ -493,6 +495,7 @@ impl Clue {
 
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
+            Self::Nonsense => &[],
             Self::CountCells { selector, .. } => selector.neighbor_offsets(),
             Self::Connected { .. }
             | Self::DirectRelation { .. }
@@ -505,6 +508,7 @@ impl Clue {
 
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
+            Self::Nonsense => None,
             Self::CountCells { selector, .. } => selector.direction_offset(),
             Self::DirectRelation { direction, .. } => Some(direction.offset()),
             Self::Connected { .. }
@@ -539,6 +543,13 @@ mod tests {
         };
 
         assert_eq!(clue.text(), "Ada has 3 innocent neighbors");
+    }
+
+    #[test]
+    fn nonsense_renders_puzzle_text() {
+        let clue = Clue::Nonsense;
+
+        assert_eq!(clue.text(), "I glued my hat to my head.");
     }
 
     #[test]

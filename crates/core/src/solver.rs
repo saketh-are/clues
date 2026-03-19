@@ -1,0 +1,713 @@
+use std::collections::HashMap;
+
+use crate::{
+    clue::{
+        CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, PersonGroup,
+        PersonPredicate, Quantifier,
+    },
+    geometry::{BoardShape, Position},
+    puzzle::Puzzle,
+    types::{Answer, Name, Role},
+};
+
+type BitMask = u32;
+const CELL_COUNT: usize = 20;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForcedAnswer {
+    Criminal,
+    Innocent,
+    Neither,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClueAnalysis {
+    pub has_solution: bool,
+    pub forced_answers: Vec<Vec<ForcedAnswer>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SolveError {
+    RaggedBoard,
+    WrongCellCount(usize),
+    DuplicateName(Name),
+    MissingName(Name),
+    InvalidRow(u8),
+    InvalidColumn(Column),
+}
+
+#[derive(Debug, Clone)]
+enum CompiledClue {
+    Count {
+        mask: BitMask,
+        answer: Answer,
+        count: Count,
+    },
+    Compare {
+        left_mask: BitMask,
+        right_mask: BitMask,
+        answer: Answer,
+        comparison: Comparison,
+    },
+    Connected {
+        mask: BitMask,
+        answer: Answer,
+    },
+    Quantified {
+        group_mask: BitMask,
+        predicate: CompiledPredicate,
+        quantifier: Quantifier,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct CompiledPredicate {
+    masks_by_origin: [BitMask; CELL_COUNT],
+    answer: Answer,
+    count: Count,
+}
+
+#[derive(Debug, Clone)]
+struct CompileContext {
+    board: BoardShape,
+    cols: u8,
+    full_mask: BitMask,
+    edge_mask: BitMask,
+    corner_mask: BitMask,
+    names: HashMap<Name, usize>,
+    role_masks: HashMap<Role, BitMask>,
+    orthogonal_masks: [BitMask; CELL_COUNT],
+    positions: [Position; CELL_COUNT],
+}
+
+pub fn analyze_puzzle(puzzle: &Puzzle) -> Result<ClueAnalysis, SolveError> {
+    let clues: Vec<Clue> = puzzle
+        .cells
+        .iter()
+        .flat_map(|row| row.iter().map(|cell| cell.clue.clone()))
+        .collect();
+
+    analyze_clues(puzzle, &clues)
+}
+
+pub fn analyze_clues(puzzle: &Puzzle, clues: &[Clue]) -> Result<ClueAnalysis, SolveError> {
+    let context = CompileContext::new(puzzle)?;
+    let compiled_clues = clues
+        .iter()
+        .map(|clue| context.compile_clue(clue))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut found_solution = false;
+    let mut always_innocent = context.full_mask;
+    let mut always_criminal = context.full_mask;
+
+    for assignment in 0..=context.full_mask {
+        if compiled_clues
+            .iter()
+            .all(|clue| context.assignment_satisfies_clue(assignment, clue))
+        {
+            found_solution = true;
+            always_innocent &= assignment;
+            always_criminal &= (!assignment) & context.full_mask;
+        }
+    }
+
+    let forced_answers = (0..context.board.rows as usize)
+        .map(|row| {
+            (0..context.cols as usize)
+                .map(|col| {
+                    if !found_solution {
+                        return ForcedAnswer::Neither;
+                    }
+
+                    let bit = 1u32 << (row * context.cols as usize + col);
+                    if always_innocent & bit != 0 {
+                        ForcedAnswer::Innocent
+                    } else if always_criminal & bit != 0 {
+                        ForcedAnswer::Criminal
+                    } else {
+                        ForcedAnswer::Neither
+                    }
+                })
+                .collect()
+        })
+        .collect();
+
+    Ok(ClueAnalysis {
+        has_solution: found_solution,
+        forced_answers,
+    })
+}
+
+impl CompileContext {
+    fn new(puzzle: &Puzzle) -> Result<Self, SolveError> {
+        let rows = puzzle.cells.len();
+        let cols = puzzle
+            .cells
+            .first()
+            .map(|row| row.len())
+            .unwrap_or_default();
+
+        if puzzle.cells.iter().any(|row| row.len() != cols) {
+            return Err(SolveError::RaggedBoard);
+        }
+
+        let cell_count = rows * cols;
+        if cell_count != CELL_COUNT {
+            return Err(SolveError::WrongCellCount(cell_count));
+        }
+
+        let board = BoardShape::new(rows as u8, cols as u8);
+        let full_mask = (1u32 << CELL_COUNT) - 1;
+        let mut positions = [Position::new(0, 0); CELL_COUNT];
+        let mut names = HashMap::new();
+        let mut role_masks: HashMap<Role, BitMask> = HashMap::new();
+        let mut edge_mask = 0;
+        let mut corner_mask = 0;
+
+        for (row_index, row) in puzzle.cells.iter().enumerate() {
+            for (col_index, cell) in row.iter().enumerate() {
+                let index = row_index * cols + col_index;
+                let position = Position::new(row_index as i16, col_index as i16);
+                let bit = 1u32 << index;
+                positions[index] = position;
+
+                if names.insert(cell.name.clone(), index).is_some() {
+                    return Err(SolveError::DuplicateName(cell.name.clone()));
+                }
+
+                role_masks
+                    .entry(cell.role.clone())
+                    .and_modify(|mask| *mask |= bit)
+                    .or_insert(bit);
+
+                if board.is_edge(position) {
+                    edge_mask |= bit;
+                }
+                if board.is_corner(position) {
+                    corner_mask |= bit;
+                }
+            }
+        }
+
+        let mut orthogonal_masks = [0; CELL_COUNT];
+        for (index, position) in positions.iter().enumerate() {
+            orthogonal_masks[index] = Self::positions_to_mask(
+                &board.orthogonal_neighbors(*position),
+                cols,
+            );
+        }
+
+        Ok(Self {
+            board,
+            cols: cols as u8,
+            full_mask,
+            edge_mask,
+            corner_mask,
+            names,
+            role_masks,
+            orthogonal_masks,
+            positions,
+        })
+    }
+
+    fn compile_clue(&self, clue: &Clue) -> Result<CompiledClue, SolveError> {
+        match clue {
+            Clue::Nonsense => Ok(CompiledClue::Count {
+                mask: self.full_mask,
+                answer: Answer::Innocent,
+                count: Count::AtLeast(0),
+            }),
+            Clue::CountCells {
+                selector,
+                answer,
+                count,
+                filter,
+            } => Ok(CompiledClue::Count {
+                mask: self.selector_mask(selector)? & self.filter_mask(*filter),
+                answer: *answer,
+                count: *count,
+            }),
+            Clue::Connected { answer, line } => Ok(CompiledClue::Connected {
+                mask: self.line_mask(*line)?,
+                answer: *answer,
+            }),
+            Clue::DirectRelation {
+                name,
+                answer,
+                direction,
+            } => Ok(CompiledClue::Count {
+                mask: self.direct_relation_mask(name, *direction)?,
+                answer: *answer,
+                count: Count::Number(1),
+            }),
+            Clue::RoleCount {
+                role,
+                answer,
+                count,
+            } => Ok(CompiledClue::Count {
+                mask: self.role_mask(role),
+                answer: *answer,
+                count: *count,
+            }),
+            Clue::RolesComparison {
+                first_role,
+                second_role,
+                answer,
+                comparison,
+            } => Ok(CompiledClue::Compare {
+                left_mask: self.role_mask(first_role),
+                right_mask: self.role_mask(second_role),
+                answer: *answer,
+                comparison: *comparison,
+            }),
+            Clue::LineComparison {
+                first_line,
+                second_line,
+                answer,
+                comparison,
+            } => Ok(CompiledClue::Compare {
+                left_mask: self.line_mask(*first_line)?,
+                right_mask: self.line_mask(*second_line)?,
+                answer: *answer,
+                comparison: *comparison,
+            }),
+            Clue::Quantified {
+                quantifier,
+                group,
+                predicate,
+            } => Ok(CompiledClue::Quantified {
+                group_mask: self.group_mask(group)?,
+                predicate: self.compile_predicate(predicate)?,
+                quantifier: *quantifier,
+            }),
+        }
+    }
+
+    fn compile_predicate(&self, predicate: &PersonPredicate) -> Result<CompiledPredicate, SolveError> {
+        let mut masks_by_origin = [0; CELL_COUNT];
+
+        match predicate {
+            PersonPredicate::Neighbor {
+                answer,
+                count,
+                filter,
+            } => {
+                for (index, position) in self.positions.iter().enumerate() {
+                    masks_by_origin[index] = Self::positions_to_mask(
+                        &self.board.touching_neighbors(*position),
+                        self.cols as usize,
+                    ) & self.filter_mask(*filter);
+                }
+
+                Ok(CompiledPredicate {
+                    masks_by_origin,
+                    answer: *answer,
+                    count: *count,
+                })
+            }
+            PersonPredicate::DirectRelation { answer, direction } => {
+                let offset = match direction {
+                    Direction::Above => Direction::Below.offset(),
+                    Direction::Below => Direction::Above.offset(),
+                    Direction::Left => Direction::Right.offset(),
+                    Direction::Right => Direction::Left.offset(),
+                };
+
+                for (index, position) in self.positions.iter().enumerate() {
+                    let shifted = position.shifted(offset);
+                    if self.board.contains(shifted) {
+                        masks_by_origin[index] = self.position_to_bit(shifted);
+                    }
+                }
+
+                Ok(CompiledPredicate {
+                    masks_by_origin,
+                    answer: *answer,
+                    count: Count::Number(1),
+                })
+            }
+        }
+    }
+
+    fn assignment_satisfies_clue(&self, assignment: BitMask, clue: &CompiledClue) -> bool {
+        match clue {
+            CompiledClue::Count { mask, answer, count } => {
+                self.matches_count(assignment, *mask, *answer, *count)
+            }
+            CompiledClue::Compare {
+                left_mask,
+                right_mask,
+                answer,
+                comparison,
+            } => {
+                let left = self.matching_count(assignment, *left_mask, *answer);
+                let right = self.matching_count(assignment, *right_mask, *answer);
+
+                match comparison {
+                    Comparison::More => left > right,
+                    Comparison::Fewer => left < right,
+                    Comparison::Equal => left == right,
+                }
+            }
+            CompiledClue::Connected { mask, answer } => {
+                self.matching_positions(assignment, *mask, *answer)
+                    .map(|selected| self.is_connected(selected))
+                    .unwrap_or(true)
+            }
+            CompiledClue::Quantified {
+                group_mask,
+                predicate,
+                quantifier,
+            } => {
+                let matching_people = (0..CELL_COUNT)
+                    .filter(|index| group_mask & (1u32 << index) != 0)
+                    .filter(|index| {
+                        self.matches_count(
+                            assignment,
+                            predicate.masks_by_origin[*index],
+                            predicate.answer,
+                            predicate.count,
+                        )
+                    })
+                    .count() as i32;
+
+                match quantifier {
+                    Quantifier::Exactly(expected) => matching_people == *expected,
+                }
+            }
+        }
+    }
+
+    fn matching_positions(
+        &self,
+        assignment: BitMask,
+        mask: BitMask,
+        answer: Answer,
+    ) -> Option<BitMask> {
+        let selected = match answer {
+            Answer::Innocent => assignment & mask,
+            Answer::Criminal => ((!assignment) & self.full_mask) & mask,
+        };
+
+        if selected == 0 {
+            None
+        } else {
+            Some(selected)
+        }
+    }
+
+    fn is_connected(&self, selected: BitMask) -> bool {
+        let start_index = selected.trailing_zeros() as usize;
+        let mut frontier = 1u32 << start_index;
+        let mut visited = 0;
+
+        while frontier != 0 {
+            let index = frontier.trailing_zeros() as usize;
+            let bit = 1u32 << index;
+            frontier &= !bit;
+
+            if visited & bit != 0 {
+                continue;
+            }
+
+            visited |= bit;
+            frontier |= self.orthogonal_masks[index] & selected & !visited;
+        }
+
+        visited == selected
+    }
+
+    fn matches_count(
+        &self,
+        assignment: BitMask,
+        mask: BitMask,
+        answer: Answer,
+        count: Count,
+    ) -> bool {
+        let matching = self.matching_count(assignment, mask, answer);
+
+        match count {
+            Count::Number(number) => matching == number as u32,
+            Count::AtLeast(number) => matching >= number as u32,
+            Count::Parity(crate::clue::Parity::Odd) => matching % 2 == 1,
+            Count::Parity(crate::clue::Parity::Even) => matching % 2 == 0,
+        }
+    }
+
+    fn matching_count(&self, assignment: BitMask, mask: BitMask, answer: Answer) -> u32 {
+        let innocents = (assignment & mask).count_ones();
+
+        match answer {
+            Answer::Innocent => innocents,
+            Answer::Criminal => mask.count_ones() - innocents,
+        }
+    }
+
+    fn selector_mask(&self, selector: &CellSelector) -> Result<BitMask, SolveError> {
+        Ok(match selector {
+            CellSelector::Board => self.full_mask,
+            CellSelector::Neighbor { name } => {
+                Self::positions_to_mask(&self.board.touching_neighbors(self.name_position(name)?), self.cols as usize)
+            }
+            CellSelector::Direction { name, direction } => Self::positions_to_mask(
+                &self
+                    .board
+                    .tiles_in_direction(self.name_position(name)?, direction.offset()),
+                self.cols as usize,
+            ),
+            CellSelector::Row { row } => self.line_mask(Line::Row(*row))?,
+            CellSelector::Col { col } => self.line_mask(Line::Col(*col))?,
+            CellSelector::Between {
+                first_name,
+                second_name,
+            } => {
+                let first = self.name_position(first_name)?;
+                let second = self.name_position(second_name)?;
+
+                if first.row == second.row || first.col == second.col {
+                    Self::positions_to_mask(
+                        &self.board.positions_between(first, second),
+                        self.cols as usize,
+                    )
+                } else {
+                    0
+                }
+            }
+            CellSelector::SharedNeighbor {
+                first_name,
+                second_name,
+            } => Self::positions_to_mask(
+                &self
+                    .board
+                    .common_neighbors(self.name_position(first_name)?, self.name_position(second_name)?),
+                self.cols as usize,
+            ),
+        })
+    }
+
+    fn direct_relation_mask(&self, name: &str, direction: Direction) -> Result<BitMask, SolveError> {
+        let shifted = self.name_position(name)?.shifted(direction.offset());
+        Ok(if self.board.contains(shifted) {
+            self.position_to_bit(shifted)
+        } else {
+            0
+        })
+    }
+
+    fn group_mask(&self, group: &PersonGroup) -> Result<BitMask, SolveError> {
+        Ok(match group {
+            PersonGroup::Any => self.full_mask,
+            PersonGroup::Filter { filter } => self.filter_mask(*filter),
+            PersonGroup::Line { line } => self.line_mask(*line)?,
+            PersonGroup::Role { role } => self.role_mask(role),
+        })
+    }
+
+    fn role_mask(&self, role: &str) -> BitMask {
+        self.role_masks.get(role).copied().unwrap_or(0)
+    }
+
+    fn line_mask(&self, line: Line) -> Result<BitMask, SolveError> {
+        match line {
+            Line::Row(row) => {
+                if row >= self.board.rows {
+                    return Err(SolveError::InvalidRow(row));
+                }
+
+                Ok(Self::positions_to_mask(
+                    &self.board.row_positions(row),
+                    self.cols as usize,
+                ))
+            }
+            Line::Col(col) => {
+                if col.index() >= self.cols {
+                    return Err(SolveError::InvalidColumn(col));
+                }
+
+                Ok(Self::positions_to_mask(
+                    &self.board.col_positions(col.index()),
+                    self.cols as usize,
+                ))
+            }
+        }
+    }
+
+    fn filter_mask(&self, filter: CellFilter) -> BitMask {
+        match filter {
+            CellFilter::Any => self.full_mask,
+            CellFilter::Edge => self.edge_mask,
+            CellFilter::Corner => self.corner_mask,
+        }
+    }
+
+    fn name_position(&self, name: &str) -> Result<Position, SolveError> {
+        let index = self
+            .names
+            .get(name)
+            .copied()
+            .ok_or_else(|| SolveError::MissingName(name.to_string()))?;
+
+        Ok(self.positions[index])
+    }
+
+    fn position_to_bit(&self, position: Position) -> BitMask {
+        1u32 << (position.row as usize * self.cols as usize + position.col as usize)
+    }
+
+    fn positions_to_mask(positions: &[Position], cols: usize) -> BitMask {
+        positions.iter().fold(0, |mask, position| {
+            mask | (1u32 << (position.row as usize * cols + position.col as usize))
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        clue::{
+            CellFilter, CellSelector, Clue, Count, Direction, Quantifier,
+        },
+        puzzle::{Cell, Puzzle, Visibility},
+        solver::{analyze_clues, analyze_puzzle, ForcedAnswer},
+        types::{Answer, NAMES},
+    };
+
+    fn test_puzzle() -> Puzzle {
+        let roles = ["Sleuth", "Coder", "Coach", "Chef"];
+        let dummy_clue = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Innocent,
+            count: Count::AtLeast(0),
+            filter: CellFilter::Any,
+        };
+
+        let cells = (0..5)
+            .map(|row| {
+                (0..4)
+                    .map(|col| {
+                        let index = row * 4 + col;
+                        Cell {
+                            name: NAMES[index].to_string(),
+                            role: roles[col].to_string(),
+                            clue: dummy_clue.clone(),
+                            answer: Answer::Innocent,
+                            state: Visibility::Hidden,
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        Puzzle { cells }
+    }
+
+    #[test]
+    fn board_wide_innocent_count_forces_every_tile_innocent() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Innocent,
+            count: Count::Number(20),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert!(analysis
+            .forced_answers
+            .iter()
+            .flatten()
+            .all(|forced| *forced == ForcedAnswer::Innocent));
+    }
+
+    #[test]
+    fn direct_relation_can_force_a_single_tile() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::DirectRelation {
+            name: "Albert".to_string(),
+            answer: Answer::Innocent,
+            direction: Direction::Left,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(analysis.forced_answers[0][0], ForcedAnswer::Innocent);
+        assert_eq!(analysis.forced_answers[0][1], ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn impossible_direct_relation_has_no_solution() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::DirectRelation {
+            name: "Alex".to_string(),
+            answer: Answer::Innocent,
+            direction: Direction::Left,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(!analysis.has_solution);
+        assert!(analysis
+            .forced_answers
+            .iter()
+            .flatten()
+            .all(|forced| *forced == ForcedAnswer::Neither));
+    }
+
+    #[test]
+    fn analyze_puzzle_uses_cell_clues() {
+        let mut puzzle = test_puzzle();
+        puzzle.cells[0][0].clue = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Criminal,
+            count: Count::Number(0),
+            filter: CellFilter::Any,
+        };
+
+        let analysis = analyze_puzzle(&puzzle).unwrap();
+
+        assert!(analysis.has_solution);
+        assert!(analysis
+            .forced_answers
+            .iter()
+            .flatten()
+            .all(|forced| *forced == ForcedAnswer::Innocent));
+    }
+
+    #[test]
+    fn quantified_clue_is_supported_by_solver() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::Quantified {
+            quantifier: Quantifier::Exactly(1),
+            group: crate::clue::PersonGroup::Role {
+                role: "Sleuth".to_string(),
+            },
+            predicate: crate::clue::PersonPredicate::DirectRelation {
+                answer: Answer::Innocent,
+                direction: Direction::Left,
+            },
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+    }
+
+    #[test]
+    fn nonsense_clue_adds_no_constraints() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::Nonsense];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert!(analysis
+            .forced_answers
+            .iter()
+            .flatten()
+            .all(|forced| *forced == ForcedAnswer::Neither));
+    }
+}
