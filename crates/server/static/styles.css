@@ -566,7 +566,7 @@ h1 {
 
   35% {
     transform: scale(1.02);
-    box-shadow: 0 0 0 2px rgba(207, 95, 63, 0.55), 0 0 26px rgba(207, 95, 63, 0.22);
+    box-shadow: 0 0 0 3px rgba(207, 95, 63, 0.55), 0 0 28px rgba(207, 95, 63, 0.24);
   }
 
   100% {
