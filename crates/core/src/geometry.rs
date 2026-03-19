@@ -130,10 +130,7 @@ impl Position {
     }
 
     pub fn shifted(self, offset: Offset) -> Self {
-        Self::new(
-            self.row + offset.row as i16,
-            self.col + offset.col as i16,
-        )
+        Self::new(self.row + offset.row as i16, self.col + offset.col as i16)
     }
 }
 
@@ -221,9 +218,11 @@ mod tests {
         let top_left = Position::new(0, 0);
         let board = BoardShape::new(5, 4);
 
-        assert!(board
-            .tiles_in_direction(top_left, Offset::new(-1, 0))
-            .is_empty());
+        assert!(
+            board
+                .tiles_in_direction(top_left, Offset::new(-1, 0))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -231,9 +230,11 @@ mod tests {
         let top_left = Position::new(0, 0);
         let board = BoardShape::new(5, 4);
 
-        assert!(board
-            .tiles_in_direction(top_left, Offset::new(0, -1))
-            .is_empty());
+        assert!(
+            board
+                .tiles_in_direction(top_left, Offset::new(0, -1))
+                .is_empty()
+        );
     }
 
     #[test]
@@ -251,7 +252,8 @@ mod tests {
         let board = BoardShape::new(5, 4);
 
         assert_eq!(
-            board.common_neighbors(Position::new(1, 1), Position::new(1, 2))
+            board
+                .common_neighbors(Position::new(1, 1), Position::new(1, 2))
                 .len(),
             4,
         );

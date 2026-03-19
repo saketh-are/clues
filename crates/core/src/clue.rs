@@ -195,10 +195,9 @@ impl CellSelector {
         match self {
             Self::Board => &[],
             Self::Neighbor { .. } | Self::SharedNeighbor { .. } => &TOUCHING_NEIGHBOR_OFFSETS,
-            Self::Direction { .. }
-            | Self::Row { .. }
-            | Self::Col { .. }
-            | Self::Between { .. } => &[],
+            Self::Direction { .. } | Self::Row { .. } | Self::Col { .. } | Self::Between { .. } => {
+                &[]
+            }
         }
     }
 
@@ -238,9 +237,9 @@ impl Comparison {
             Self::Fewer => {
                 format!("there are fewer {noun} in {first_scope} than in {second_scope}")
             }
-            Self::Equal => format!(
-                "there are as many {noun} in {first_scope} as in {second_scope}"
-            ),
+            Self::Equal => {
+                format!("there are as many {noun} in {first_scope} as in {second_scope}")
+            }
         }
     }
 }
@@ -479,7 +478,11 @@ impl Clue {
                 second_line,
                 answer,
                 comparison,
-            } => comparison.describe_in(&format!("{answer}s"), &first_line.to_string(), &second_line.to_string()),
+            } => comparison.describe_in(
+                &format!("{answer}s"),
+                &first_line.to_string(),
+                &second_line.to_string(),
+            ),
             Self::Quantified {
                 quantifier,
                 group,
@@ -526,10 +529,7 @@ mod tests {
         CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, Parity,
         PersonGroup, PersonPredicate, Quantifier,
     };
-    use crate::{
-        geometry::Offset,
-        types::Answer,
-    };
+    use crate::{geometry::Offset, types::Answer};
 
     #[test]
     fn neighbor_renders_number_puzzle_text() {
@@ -561,7 +561,10 @@ mod tests {
             filter: CellFilter::Corner,
         };
 
-        assert_eq!(clue.text(), "there are an even number of innocents in the corners");
+        assert_eq!(
+            clue.text(),
+            "there are an even number of innocents in the corners"
+        );
     }
 
     #[test]
@@ -608,7 +611,10 @@ mod tests {
             filter: CellFilter::Any,
         };
 
-        assert_eq!(clue.text(), "there are an even number of innocents below Ada");
+        assert_eq!(
+            clue.text(),
+            "there are an even number of innocents below Ada"
+        );
     }
 
     #[test]
@@ -842,9 +848,7 @@ mod tests {
     fn exactly_one_row_person_renders_puzzle_text() {
         let clue = Clue::Quantified {
             quantifier: Quantifier::Exactly(1),
-            group: PersonGroup::Line {
-                line: Line::Row(2),
-            },
+            group: PersonGroup::Line { line: Line::Row(2) },
             predicate: PersonPredicate::Neighbor {
                 answer: Answer::Innocent,
                 count: Count::Number(4),

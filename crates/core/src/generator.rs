@@ -170,7 +170,9 @@ impl Layout {
     ) -> usize {
         positions
             .iter()
-            .filter(|position| answer_for_index(assignment, self.index_of_position(**position)) == answer)
+            .filter(|position| {
+                answer_for_index(assignment, self.index_of_position(**position)) == answer
+            })
             .count()
     }
 
@@ -337,14 +339,21 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
 }
 
 fn sample_names<R: Rng + ?Sized>(rng: &mut R) -> Vec<Name> {
-    let mut names = NAMES.iter().map(|name| (*name).to_string()).collect::<Vec<_>>();
+    let mut names = NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
     names.shuffle(rng);
     names.truncate(CELL_COUNT);
+    names.sort_unstable();
     names
 }
 
 fn sample_roles<R: Rng + ?Sized>(rng: &mut R) -> Result<Vec<Role>, GenerateError> {
-    let mut roles = ROLES.iter().map(|role| (*role).to_string()).collect::<Vec<_>>();
+    let mut roles = ROLES
+        .iter()
+        .map(|role| (*role).to_string())
+        .collect::<Vec<_>>();
     let pool_size = rng.gen_range(MIN_ROLE_POOL_SIZE..=MAX_ROLE_POOL_SIZE);
 
     if roles.len() < pool_size {
@@ -556,8 +565,11 @@ fn sample_line_comparison_clue<R: Rng + ?Sized>(
         .collect::<Vec<_>>()
         .choose(rng)?;
     let answer = random_answer(rng);
-    let first_count =
-        layout.matching_count_in_positions(assignment, &layout.positions_for_line(first_line), answer);
+    let first_count = layout.matching_count_in_positions(
+        assignment,
+        &layout.positions_for_line(first_line),
+        answer,
+    );
     let second_count = layout.matching_count_in_positions(
         assignment,
         &layout.positions_for_line(second_line),
@@ -707,10 +719,7 @@ fn random_column<R: Rng + ?Sized>(rng: &mut R) -> Column {
     }
 }
 
-fn random_distinct_names<R: Rng + ?Sized>(
-    rng: &mut R,
-    names: &[Name],
-) -> Option<(Name, Name)> {
+fn random_distinct_names<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Option<(Name, Name)> {
     if names.len() < 2 {
         return None;
     }
@@ -734,7 +743,7 @@ mod tests {
     use crate::solver::solve_clues_with_known_mask;
 
     use super::{
-        COLS, GenerateError, ForcedAnswer, ROWS, distinct_roles, generate_puzzle_with_rng,
+        COLS, ForcedAnswer, GenerateError, ROWS, distinct_roles, generate_puzzle_with_rng,
         generate_puzzle_with_seed,
     };
 
@@ -756,11 +765,12 @@ mod tests {
             .position(|cell| cell.state == crate::puzzle::Visibility::Revealed)
             .unwrap();
         let known_mask = 1u32 << first_index;
-        let known_innocent_mask = if generated.first_revealed_answer == crate::types::Answer::Innocent {
-            known_mask
-        } else {
-            0
-        };
+        let known_innocent_mask =
+            if generated.first_revealed_answer == crate::types::Answer::Innocent {
+                known_mask
+            } else {
+                0
+            };
         let solved =
             solve_clues_with_known_mask(&generated.puzzle, &clues, known_mask, known_innocent_mask)
                 .unwrap();

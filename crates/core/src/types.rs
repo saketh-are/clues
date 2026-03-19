@@ -52,16 +52,16 @@ pub const NAMES: [&str; 78] = [
     "Hana", "Hazel", "Hugo", "Iris", "Isaac", "Ivy", "Jade", "Jasper", "June", "Kai", "Kira",
     "Knox", "Leo", "Luna", "Lydia", "Maya", "Milo", "Mira", "Nadia", "Noah", "Nora", "Omar",
     "Opal", "Owen", "Parker", "Piper", "Priya", "Quentin", "Quinn", "Quincy", "Rafael", "Rowan",
-    "Ruby", "Sadie", "Silas", "Sloane", "Tessa", "Theo", "Tristan", "Uma", "Uri", "Ursula",
-    "Vera", "Victor", "Violet", "Willow", "Wren", "Wyatt", "Xander", "Xia", "Ximena", "Yara",
-    "Yasmin", "Yuri", "Zane", "Zara", "Zoe",
+    "Ruby", "Sadie", "Silas", "Sloane", "Tessa", "Theo", "Tristan", "Uma", "Uri", "Ursula", "Vera",
+    "Victor", "Violet", "Willow", "Wren", "Wyatt", "Xander", "Xia", "Ximena", "Yara", "Yasmin",
+    "Yuri", "Zane", "Zara", "Zoe",
 ];
 
 pub type Role = String;
 
 #[rustfmt::skip]
-pub const ROLES: [&str; 24] = [
-    "Artist", "Baker", "Botanist", "Chef", "Coach", "Coder", "Curator", "Dancer", "Designer",
-    "Doctor", "Driver", "Florist", "Gardener", "Journalist", "Librarian", "Musician", "Nurse",
-    "Painter", "Pilot", "Poet", "Ranger", "Sailor", "Sculptor", "Teacher",
+pub const ROLES: [&str; 17] = [
+    "Artist", "Builder", "Cook", "Detective", "Doctor", "Farmer", "Firefighter", "Guard",
+    "Judge", "Mechanic", "Nurse", "Pilot", "Police Officer", "Scientist", "Singer", "Teacher",
+    "Technologist",
 ];

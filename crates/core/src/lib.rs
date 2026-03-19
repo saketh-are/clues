@@ -12,5 +12,7 @@ pub use clue::{
 pub use generator::{GenerateError, GeneratedPuzzle, generate_puzzle, generate_puzzle_with_seed};
 pub use geometry::{BoardShape, Offset, Position, TOUCHING_NEIGHBOR_OFFSETS};
 pub use puzzle::{Cell, Puzzle, Visibility};
-pub use solver::{analyze_clues, analyze_puzzle, ClueAnalysis, ForcedAnswer, SolveError};
+pub use solver::{
+    ClueAnalysis, ForcedAnswer, SolveError, analyze_clues, analyze_puzzle, analyze_revealed_puzzle,
+};
 pub use types::{Answer, NAMES, Name, ROLES, Role};

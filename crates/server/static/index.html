@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clues</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="background background-one"></div>
+    <div class="background background-two"></div>
+
+    <main class="page">
+      <section class="topbar">
+        <div class="brand">
+          <h1>Clues</h1>
+        </div>
+
+        <div class="controls">
+          <button id="new-random" class="button button-secondary" type="button">
+            New Puzzle
+          </button>
+
+          <button id="share-puzzle" class="button button-secondary" type="button">
+            Share
+          </button>
+
+          <button id="clear-board" class="button button-secondary" type="button">
+            Clear
+          </button>
+        </div>
+      </section>
+
+      <section id="board-shell" class="board-shell">
+        <section id="board" class="board" aria-live="polite"></section>
+      </section>
+    </main>
+
+    <div id="guess-modal" class="modal" hidden>
+      <div id="guess-backdrop" class="modal-backdrop"></div>
+      <div
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guess-title"
+      >
+        <span id="guess-emoji" class="modal-emoji" aria-hidden="true"></span>
+        <h2 id="guess-title" class="modal-title"></h2>
+        <div class="modal-actions">
+          <button id="guess-innocent" class="button button-good" type="button">
+            Innocent
+          </button>
+          <button id="guess-criminal" class="button button-bad" type="button">
+            Criminal
+          </button>
+        </div>
+        <button id="guess-cancel" class="button button-secondary modal-dismiss" type="button">
+          Cancel
+        </button>
+      </div>
+    </div>
+
+    <div id="error-modal" class="modal" hidden>
+      <div id="error-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="error-title">
+        <h2 id="error-title" class="modal-title modal-title-error"></h2>
+        <p id="error-message" class="modal-message"></p>
+        <button id="error-dismiss" class="button button-secondary modal-dismiss" type="button">
+          Dismiss
+        </button>
+      </div>
+    </div>
+
+    <template id="cell-template">
+      <article class="cell">
+        <div class="cell-top">
+          <span class="cell-position"></span>
+          <button class="cell-note" type="button" aria-label="Tile note"></button>
+        </div>
+        <div class="cell-header">
+          <span class="cell-emoji" aria-hidden="true"></span>
+          <span class="cell-name"></span>
+          <span class="cell-role"></span>
+        </div>
+        <p class="cell-clue"></p>
+      </article>
+    </template>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>

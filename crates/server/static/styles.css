@@ -1,0 +1,471 @@
+:root {
+  --ink: #1f2430;
+  --muted: #6b6458;
+  --accent: #cf5f3f;
+  --good: #2d7a53;
+  --bad: #b43c2f;
+  --card: rgba(255, 251, 246, 0.92);
+  --line: rgba(31, 36, 48, 0.12);
+  --shadow: 0 16px 34px rgba(61, 40, 18, 0.14);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  overflow: hidden;
+  color: var(--ink);
+  -webkit-text-size-adjust: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(232, 160, 82, 0.14), transparent 24%),
+    radial-gradient(circle at top right, rgba(202, 95, 63, 0.1), transparent 20%),
+    linear-gradient(160deg, #f8f2e8 0%, #f3e8d5 44%, #f7efe5 100%);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+}
+
+.background {
+  position: fixed;
+  pointer-events: none;
+  filter: blur(8px);
+}
+
+.background-one {
+  top: 1rem;
+  right: 3rem;
+  width: 11rem;
+  height: 11rem;
+  border-radius: 44% 56% 61% 39% / 54% 37% 63% 46%;
+  background: rgba(207, 95, 63, 0.12);
+}
+
+.background-two {
+  bottom: 1rem;
+  left: 2rem;
+  width: 15rem;
+  height: 8rem;
+  border-radius: 54% 46% 37% 63% / 41% 56% 44% 59%;
+  background: rgba(98, 153, 119, 0.1);
+}
+
+.page {
+  position: relative;
+  max-width: 1280px;
+  height: 100dvh;
+  margin: 0 auto;
+  padding: 0.36rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.28rem;
+}
+
+.topbar {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.82rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+  padding: 0.22rem 0.42rem;
+  display: flex;
+  gap: 0.22rem;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: nowrap;
+}
+
+.eyebrow,
+.cell-position {
+  margin: 0;
+  font-size: 0.46rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+h1 {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: clamp(1rem, 2.4vw, 1.46rem);
+  line-height: 0.9;
+  letter-spacing: -0.05em;
+}
+
+.brand {
+  display: grid;
+  gap: 0.04rem;
+  flex: 0 0 auto;
+}
+
+.controls {
+  display: flex;
+  min-width: 0;
+  gap: 0.14rem;
+  align-items: center;
+  flex: 1 1 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  font-size: 0.8rem;
+}
+
+.button {
+  font: inherit;
+}
+
+.button,
+.modal-cancel {
+  border: 0;
+  border-radius: 999px;
+  min-height: 1.5rem;
+  cursor: pointer;
+}
+
+.button {
+  padding: 0.18rem 0.44rem;
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.button-primary {
+  background: linear-gradient(135deg, var(--accent) 0%, #e28d54 100%);
+  color: white;
+}
+
+.button-good {
+  background: linear-gradient(135deg, #3d9a67 0%, #68b884 100%);
+  color: white;
+}
+
+.button-bad {
+  background: linear-gradient(135deg, #b94b3d 0%, #d86a56 100%);
+  color: white;
+}
+
+.button-secondary {
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--ink);
+  border: 1px solid var(--line);
+}
+
+.board-shell {
+  min-height: 0;
+}
+
+.board {
+  height: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(5, minmax(0, 1fr));
+  gap: 0.14rem;
+}
+
+.cell {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.06rem;
+  padding: 0.2rem;
+  background: var(--card);
+  border: 1px solid rgba(31, 36, 48, 0.1);
+  border-radius: 0.42rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+.cell.clickable {
+  cursor: pointer;
+}
+
+.cell-top {
+  display: flex;
+  justify-content: flex-start;
+  align-items: start;
+  gap: 0.18rem;
+}
+
+.cell-note {
+  position: absolute;
+  top: -1px;
+  right: -1px;
+  width: 1.3rem;
+  height: 1.3rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  touch-action: manipulation;
+  z-index: 1;
+}
+
+.cell-note::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  clip-path: polygon(100% 0, 100% 100%, 0 0);
+  background: rgba(31, 36, 48, 0.28);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
+.cell-note.note-none::before {
+  opacity: 1;
+}
+
+.cell-note.note-yellow::before {
+  background: #f1c232;
+  filter: saturate(1.15);
+}
+
+.cell-note.note-red::before {
+  background: #d14a37;
+}
+
+.cell-note.note-green::before {
+  background: #2fa261;
+}
+
+.cell-header {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.03rem;
+  text-align: center;
+  min-height: 0;
+}
+
+.cell-emoji {
+  font-size: clamp(1.5rem, 2.8vw, 2.2rem);
+  line-height: 1;
+}
+
+.cell-name {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: clamp(0.92rem, 1.9vw, 1.45rem);
+  line-height: 0.92;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cell-role {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: clamp(0.62rem, 1vw, 0.88rem);
+  color: var(--muted);
+}
+
+.tile-innocent {
+  background: rgba(45, 122, 83, 0.14);
+}
+
+.tile-criminal {
+  background: rgba(180, 60, 47, 0.14);
+}
+
+.cell.loading {
+  opacity: 0.82;
+}
+
+.cell.flash {
+  animation: tile-flash 900ms ease;
+}
+
+.cell-clue {
+  margin: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  overflow: hidden;
+  font-size: clamp(0.86rem, 1.25vw, 1.12rem);
+  line-height: 1.08;
+  overflow-wrap: anywhere;
+}
+
+.cell.hidden-clue .cell-header {
+  flex: 1;
+}
+
+.cell.hidden-clue .cell-clue {
+  display: none;
+}
+
+.cell.has-clue {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
+.cell.has-clue .cell-header {
+  padding-top: 0.02rem;
+}
+
+.cell.has-clue .cell-clue {
+  padding: 0.04rem 0.02rem 0.08rem;
+}
+
+.cell-clue.placeholder {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.cell-clue.clue-hidden {
+  opacity: 0.2;
+}
+
+@keyframes tile-flash {
+  0% {
+    transform: scale(1);
+    box-shadow: var(--shadow);
+  }
+
+  35% {
+    transform: scale(1.02);
+    box-shadow: 0 0 0 2px rgba(207, 95, 63, 0.55), 0 0 26px rgba(207, 95, 63, 0.22);
+  }
+
+  100% {
+    transform: scale(1);
+    box-shadow: var(--shadow);
+  }
+}
+
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(31, 36, 48, 0.42);
+  backdrop-filter: blur(4px);
+}
+
+.modal-card {
+  position: relative;
+  z-index: 1;
+  width: min(92vw, 20.5rem);
+  padding: 1rem 1rem 0.85rem;
+  display: grid;
+  gap: 0.6rem;
+  background: rgba(255, 251, 246, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: 0 28px 80px rgba(31, 36, 48, 0.24);
+}
+
+.modal-title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: 1.5rem;
+  line-height: 0.95;
+  text-align: center;
+}
+
+.modal-title-error {
+  font-size: 1.16rem;
+  line-height: 1.05;
+}
+
+.modal-emoji {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  font-size: 2.4rem;
+  line-height: 1;
+}
+
+.modal-message {
+  margin: 0;
+  text-align: center;
+  font-size: 0.96rem;
+  line-height: 1.32;
+  color: var(--muted);
+}
+
+.modal-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+}
+
+.modal-dismiss {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .background {
+    display: none;
+  }
+
+  .page {
+    padding: 0.36rem;
+    gap: 0.3rem;
+  }
+
+  .topbar {
+    padding: 0.18rem 0.28rem;
+    gap: 0.16rem;
+  }
+
+  h1 {
+    font-size: 0.92rem;
+  }
+
+  .controls {
+    gap: 0.1rem;
+    font-size: 0.7rem;
+  }
+
+  .button {
+    min-height: 1.34rem;
+    padding: 0.14rem 0.34rem;
+    font-size: 0.68rem;
+  }
+
+  .board {
+    gap: 0.12rem;
+  }
+
+  .cell {
+    padding: 0.16rem;
+    gap: 0.08rem;
+    border-radius: 0.4rem;
+  }
+
+  .cell-name {
+    font-size: clamp(0.74rem, 2vw, 0.98rem);
+  }
+
+  .cell-emoji {
+    font-size: clamp(1.16rem, 3vw, 1.5rem);
+  }
+
+  .cell-role,
+  .cell-position {
+    font-size: clamp(0.46rem, 1.4vw, 0.66rem);
+  }
+
+  .cell-clue {
+    font-size: clamp(0.62rem, 1.5vw, 0.82rem);
+    line-height: 1.06;
+  }
+}

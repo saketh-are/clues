@@ -6,7 +6,7 @@ use crate::{
         PersonPredicate, Quantifier,
     },
     geometry::{BoardShape, Position},
-    puzzle::Puzzle,
+    puzzle::{Puzzle, Visibility},
     types::{Answer, Name, Role},
 };
 
@@ -96,6 +96,21 @@ pub fn analyze_puzzle(puzzle: &Puzzle) -> Result<ClueAnalysis, SolveError> {
     analyze_clues(puzzle, &clues)
 }
 
+pub fn analyze_revealed_puzzle(puzzle: &Puzzle) -> Result<ClueAnalysis, SolveError> {
+    let clues: Vec<Clue> = puzzle
+        .cells
+        .iter()
+        .flat_map(|row| {
+            row.iter()
+                .filter(|cell| cell.state == Visibility::Revealed)
+                .map(|cell| cell.clue.clone())
+        })
+        .collect();
+    let (known_mask, known_innocent_mask) = known_masks_from_revealed_cells(puzzle)?;
+
+    Ok(solve_clues_with_known_mask(puzzle, &clues, known_mask, known_innocent_mask)?.analysis)
+}
+
 pub fn analyze_clues(puzzle: &Puzzle, clues: &[Clue]) -> Result<ClueAnalysis, SolveError> {
     Ok(solve_clues_with_known_mask(puzzle, clues, 0, 0)?.analysis)
 }
@@ -133,6 +148,29 @@ pub(crate) fn solve_clues_with_known_mask(
         analysis: context.analysis_from_assignments(&assignments),
         assignments,
     })
+}
+
+fn known_masks_from_revealed_cells(puzzle: &Puzzle) -> Result<(BitMask, BitMask), SolveError> {
+    let context = CompileContext::new(puzzle)?;
+    let mut known_mask = 0;
+    let mut known_innocent_mask = 0;
+
+    for (row_index, row) in puzzle.cells.iter().enumerate() {
+        for (col_index, cell) in row.iter().enumerate() {
+            if cell.state != Visibility::Revealed {
+                continue;
+            }
+
+            let bit = 1u32 << (row_index * context.cols as usize + col_index);
+            known_mask |= bit;
+
+            if cell.answer == Answer::Innocent {
+                known_innocent_mask |= bit;
+            }
+        }
+    }
+
+    Ok((known_mask, known_innocent_mask))
 }
 
 impl CompileContext {
@@ -224,10 +262,8 @@ impl CompileContext {
 
         let mut orthogonal_masks = [0; CELL_COUNT];
         for (index, position) in positions.iter().enumerate() {
-            orthogonal_masks[index] = Self::positions_to_mask(
-                &board.orthogonal_neighbors(*position),
-                cols,
-            );
+            orthogonal_masks[index] =
+                Self::positions_to_mask(&board.orthogonal_neighbors(*position), cols);
         }
 
         Ok(Self {
@@ -316,7 +352,10 @@ impl CompileContext {
         }
     }
 
-    fn compile_predicate(&self, predicate: &PersonPredicate) -> Result<CompiledPredicate, SolveError> {
+    fn compile_predicate(
+        &self,
+        predicate: &PersonPredicate,
+    ) -> Result<CompiledPredicate, SolveError> {
         let mut masks_by_origin = [0; CELL_COUNT];
 
         match predicate {
@@ -364,9 +403,11 @@ impl CompileContext {
 
     fn assignment_satisfies_clue(&self, assignment: BitMask, clue: &CompiledClue) -> bool {
         match clue {
-            CompiledClue::Count { mask, answer, count } => {
-                self.matches_count(assignment, *mask, *answer, *count)
-            }
+            CompiledClue::Count {
+                mask,
+                answer,
+                count,
+            } => self.matches_count(assignment, *mask, *answer, *count),
             CompiledClue::Compare {
                 left_mask,
                 right_mask,
@@ -382,11 +423,10 @@ impl CompileContext {
                     Comparison::Equal => left == right,
                 }
             }
-            CompiledClue::Connected { mask, answer } => {
-                self.matching_positions(assignment, *mask, *answer)
-                    .map(|selected| self.is_connected(selected))
-                    .unwrap_or(true)
-            }
+            CompiledClue::Connected { mask, answer } => self
+                .matching_positions(assignment, *mask, *answer)
+                .map(|selected| self.is_connected(selected))
+                .unwrap_or(true),
             CompiledClue::Quantified {
                 group_mask,
                 predicate,
@@ -422,11 +462,7 @@ impl CompileContext {
             Answer::Criminal => ((!assignment) & self.full_mask) & mask,
         };
 
-        if selected == 0 {
-            None
-        } else {
-            Some(selected)
-        }
+        if selected == 0 { None } else { Some(selected) }
     }
 
     fn is_connected(&self, selected: BitMask) -> bool {
@@ -479,9 +515,10 @@ impl CompileContext {
     fn selector_mask(&self, selector: &CellSelector) -> Result<BitMask, SolveError> {
         Ok(match selector {
             CellSelector::Board => self.full_mask,
-            CellSelector::Neighbor { name } => {
-                Self::positions_to_mask(&self.board.touching_neighbors(self.name_position(name)?), self.cols as usize)
-            }
+            CellSelector::Neighbor { name } => Self::positions_to_mask(
+                &self.board.touching_neighbors(self.name_position(name)?),
+                self.cols as usize,
+            ),
             CellSelector::Direction { name, direction } => Self::positions_to_mask(
                 &self
                     .board
@@ -510,15 +547,20 @@ impl CompileContext {
                 first_name,
                 second_name,
             } => Self::positions_to_mask(
-                &self
-                    .board
-                    .common_neighbors(self.name_position(first_name)?, self.name_position(second_name)?),
+                &self.board.common_neighbors(
+                    self.name_position(first_name)?,
+                    self.name_position(second_name)?,
+                ),
                 self.cols as usize,
             ),
         })
     }
 
-    fn direct_relation_mask(&self, name: &str, direction: Direction) -> Result<BitMask, SolveError> {
+    fn direct_relation_mask(
+        &self,
+        name: &str,
+        direction: Direction,
+    ) -> Result<BitMask, SolveError> {
         let shifted = self.name_position(name)?.shifted(direction.offset());
         Ok(if self.board.contains(shifted) {
             self.position_to_bit(shifted)
@@ -597,11 +639,9 @@ impl CompileContext {
 #[cfg(test)]
 mod tests {
     use crate::{
-        clue::{
-            CellFilter, CellSelector, Clue, Count, Direction, Quantifier,
-        },
+        clue::{CellFilter, CellSelector, Clue, Count, Direction, Quantifier},
         puzzle::{Cell, Puzzle, Visibility},
-        solver::{analyze_clues, analyze_puzzle, ForcedAnswer},
+        solver::{ForcedAnswer, analyze_clues, analyze_puzzle, analyze_revealed_puzzle},
         types::{Answer, NAMES},
     };
 
@@ -647,11 +687,13 @@ mod tests {
         let analysis = analyze_clues(&puzzle, &clues).unwrap();
 
         assert!(analysis.has_solution);
-        assert!(analysis
-            .forced_answers
-            .iter()
-            .flatten()
-            .all(|forced| *forced == ForcedAnswer::Innocent));
+        assert!(
+            analysis
+                .forced_answers
+                .iter()
+                .flatten()
+                .all(|forced| *forced == ForcedAnswer::Innocent)
+        );
     }
 
     #[test]
@@ -682,11 +724,13 @@ mod tests {
         let analysis = analyze_clues(&puzzle, &clues).unwrap();
 
         assert!(!analysis.has_solution);
-        assert!(analysis
-            .forced_answers
-            .iter()
-            .flatten()
-            .all(|forced| *forced == ForcedAnswer::Neither));
+        assert!(
+            analysis
+                .forced_answers
+                .iter()
+                .flatten()
+                .all(|forced| *forced == ForcedAnswer::Neither)
+        );
     }
 
     #[test]
@@ -702,11 +746,13 @@ mod tests {
         let analysis = analyze_puzzle(&puzzle).unwrap();
 
         assert!(analysis.has_solution);
-        assert!(analysis
-            .forced_answers
-            .iter()
-            .flatten()
-            .all(|forced| *forced == ForcedAnswer::Innocent));
+        assert!(
+            analysis
+                .forced_answers
+                .iter()
+                .flatten()
+                .all(|forced| *forced == ForcedAnswer::Innocent)
+        );
     }
 
     #[test]
@@ -736,10 +782,24 @@ mod tests {
         let analysis = analyze_clues(&puzzle, &clues).unwrap();
 
         assert!(analysis.has_solution);
-        assert!(analysis
-            .forced_answers
-            .iter()
-            .flatten()
-            .all(|forced| *forced == ForcedAnswer::Neither));
+        assert!(
+            analysis
+                .forced_answers
+                .iter()
+                .flatten()
+                .all(|forced| *forced == ForcedAnswer::Neither)
+        );
+    }
+
+    #[test]
+    fn analyze_revealed_puzzle_treats_revealed_answers_as_known() {
+        let mut puzzle = test_puzzle();
+        puzzle.cells[0][0].state = Visibility::Revealed;
+
+        let analysis = analyze_revealed_puzzle(&puzzle).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(analysis.forced_answers[0][0], ForcedAnswer::Innocent);
+        assert_eq!(analysis.forced_answers[0][1], ForcedAnswer::Neither);
     }
 }
