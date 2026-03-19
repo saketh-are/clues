@@ -253,6 +253,7 @@ function mentionedTileKeys(clue) {
 function flashMentionedTiles(clue) {
   const keys = mentionedTileKeys(clue);
   if (keys.size === 0) {
+    renderBoard();
     return;
   }
 

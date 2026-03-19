@@ -18,6 +18,8 @@ const MAX_ROLE_POOL_SIZE: usize = 15;
 const MAX_PUZZLE_ATTEMPTS: usize = 64;
 const MAX_CLUE_ATTEMPTS: usize = 128;
 const FULL_MASK: u32 = (1u32 << CELL_COUNT) - 1;
+const SID_NAME: &str = "Sid";
+const BAKER_ROLE: &str = "Baker";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneratedPuzzle {
@@ -209,9 +211,19 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     }
 
     let names = sample_names(rng);
-    let roles = sample_roles(rng)?;
+    let roles = sample_roles(rng, &names)?;
     let mut puzzle = empty_puzzle(&names, &roles);
-    let layout = Layout::from_puzzle(&puzzle, distinct_roles(&roles));
+    let layout = Layout::from_puzzle(
+        &puzzle,
+        distinct_roles(
+            &puzzle
+                .cells
+                .iter()
+                .flatten()
+                .map(|cell| cell.role.clone())
+                .collect::<Vec<_>>(),
+        ),
+    );
 
     let first_index = rng.gen_range(0..CELL_COUNT);
     let first_answer = random_answer(rng);
@@ -349,7 +361,7 @@ fn sample_names<R: Rng + ?Sized>(rng: &mut R) -> Vec<Name> {
     names
 }
 
-fn sample_roles<R: Rng + ?Sized>(rng: &mut R) -> Result<Vec<Role>, GenerateError> {
+fn sample_roles<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Result<Vec<Role>, GenerateError> {
     let mut roles = ROLES
         .iter()
         .map(|role| (*role).to_string())
@@ -361,7 +373,14 @@ fn sample_roles<R: Rng + ?Sized>(rng: &mut R) -> Result<Vec<Role>, GenerateError
     }
 
     roles.shuffle(rng);
-    let role_pool = roles.into_iter().take(pool_size).collect::<Vec<_>>();
+    let mut role_pool = roles.into_iter().take(pool_size).collect::<Vec<_>>();
+    let sid_index = names.iter().position(|name| name == SID_NAME);
+
+    if sid_index.is_some() && !role_pool.iter().any(|role| role == BAKER_ROLE) {
+        let replacement_index = rng.gen_range(0..role_pool.len());
+        role_pool[replacement_index] = BAKER_ROLE.to_string();
+    }
+
     let mut assigned_roles = role_pool.clone();
 
     while assigned_roles.len() < CELL_COUNT {
@@ -369,6 +388,11 @@ fn sample_roles<R: Rng + ?Sized>(rng: &mut R) -> Result<Vec<Role>, GenerateError
     }
 
     assigned_roles.shuffle(rng);
+
+    if let Some(sid_index) = sid_index {
+        assigned_roles[sid_index] = BAKER_ROLE.to_string();
+    }
+
     Ok(assigned_roles)
 }
 
@@ -390,9 +414,15 @@ fn empty_puzzle(names: &[Name], roles: &[Role]) -> Puzzle {
             (0..COLS)
                 .map(|col| {
                     let index = row * COLS + col;
+                    let role = if names[index] == SID_NAME {
+                        BAKER_ROLE.to_string()
+                    } else {
+                        roles[index].clone()
+                    };
+
                     Cell {
                         name: names[index].clone(),
-                        role: roles[index].clone(),
+                        role,
                         clue: Clue::Nonsense,
                         answer: Answer::Innocent,
                         state: Visibility::Hidden,
@@ -743,8 +773,8 @@ mod tests {
     use crate::solver::solve_clues_with_known_mask;
 
     use super::{
-        COLS, ForcedAnswer, GenerateError, ROWS, distinct_roles, generate_puzzle_with_rng,
-        generate_puzzle_with_seed,
+        BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, ROWS, SID_NAME, distinct_roles,
+        generate_puzzle_with_rng, generate_puzzle_with_seed, sample_roles,
     };
 
     #[test]
@@ -807,6 +837,34 @@ mod tests {
         let distinct = distinct_roles(&roles);
 
         assert!((10..=15).contains(&distinct.len()));
+    }
+
+    #[test]
+    fn sid_is_always_assigned_baker_when_present() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let mut names = (0..CELL_COUNT)
+            .map(|index| format!("Person {index}"))
+            .collect::<Vec<_>>();
+        names[6] = SID_NAME.to_string();
+
+        let roles = sample_roles(&mut rng, &names).unwrap();
+
+        assert_eq!(roles[6], BAKER_ROLE);
+        assert!((10..=15).contains(&distinct_roles(&roles).len()));
+    }
+
+    #[test]
+    fn generated_puzzle_assigns_baker_to_sid() {
+        let generated = generate_puzzle_with_seed(3).unwrap();
+        let sid = generated
+            .puzzle
+            .cells
+            .iter()
+            .flatten()
+            .find(|cell| cell.name == SID_NAME)
+            .unwrap();
+
+        assert_eq!(sid.role, BAKER_ROLE);
     }
 
     #[test]

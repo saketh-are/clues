@@ -47,13 +47,15 @@ impl fmt::Display for Answer {
 pub type Name = String;
 
 pub const NAMES: [&str; 87] = [
-    "Ajay", "Akhil", "Alex", "Albert", "Anand", "Ben", "Bianca", "Blake", "Clara", "Cole",
-    "Coriander", "Cyrus", "Daphne", "Dasith", "Dean", "Diego", "Eddy", "Eden", "Elias", "Eva",
-    "Felix", "Finn", "Fiona", "Gavin", "Gia", "Grace", "Hana", "Hazel", "Hugo", "Iris", "Isaac",
-    "Ivy", "Jade", "Jasper", "June", "Kai", "Kira", "Knox", "Laika", "Leo", "Luna", "Lydia",
-    "Maya", "Milo", "Mira", "Nadia", "Noah", "Nora", "Omar", "Opal", "Owen", "Parker", "Pavan",
-    "Piper", "Priya", "Quentin", "Quinn", "Quincy", "Rafael", "Rowan", "Ruby", "Sadie", "Sid",
-    "Silas", "Sloane", "Tessa", "Theo", "Thrisha", "Tristan", "Uma", "Uri", "Ursula", "Vera",
+    "Ajay", "Akhil", "Alex", "Albert", "Anand", "BK", "Blake", "Brian", "Clara", "Cole",
+    "Coriander", "Cyrus", "Daphne", "Dasith", "Dean", "Diego", "Eddy", "Eduardo", "Elias",
+    "Eva", "Felix", "Finn", "Fiona", "Gopal", "Gia", "Grace", "Hana", "Hazel", "Hugo", "Iris",
+    "Isaac", "Ivy", "Jake", "Jasper", "June", "Kai", "Kevin", "Knox", "Laika", "Lakshmi",
+    "Leo", "Lydia", "Maya", "Milo", "Mira", "Neal", "Noah", "Nora", "Omar", "Opal", "Owen",
+    "Parker",
+    "Pavan", "Piper", "Priya", "Quentin", "Quinn", "Quincy", "Rafael", "Rowan", "Ruby", "Scott",
+    "Sid", "Silas", "Sloane", "Tessa", "Theo", "Thrisha", "Tristan", "Uma", "Uri", "Ursula",
+    "Venkat",
     "Victor", "Violet", "Willow", "Wren", "Wyatt", "Xander", "Xia", "Ximena", "Yara", "Yasmin",
     "Yuri", "Zane", "Zara", "Zoe",
 ];
