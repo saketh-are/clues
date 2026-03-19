@@ -36,6 +36,18 @@ impl BoardShape {
             .filter(|position| self.contains(*position))
             .collect()
     }
+
+    pub fn tiles_in_direction(self, origin: Position, offset: Offset) -> Vec<Position> {
+        let mut tiles = Vec::new();
+        let mut current = origin.shifted(offset);
+
+        while self.contains(current) {
+            tiles.push(current);
+            current = current.shifted(offset);
+        }
+
+        tiles
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
@@ -71,7 +83,7 @@ impl Offset {
 
 #[cfg(test)]
 mod tests {
-    use super::{BoardShape, Position};
+    use super::{BoardShape, Offset, Position};
 
     #[test]
     fn center_cell_has_eight_touching_neighbors() {
@@ -87,5 +99,56 @@ mod tests {
         let board = BoardShape::new(5, 4);
 
         assert_eq!(board.touching_neighbors(top_left).len(), 3);
+    }
+
+    #[test]
+    fn top_left_has_four_tiles_below() {
+        let top_left = Position::new(0, 0);
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(
+            board.tiles_in_direction(top_left, Offset::new(1, 0)),
+            vec![
+                Position::new(1, 0),
+                Position::new(2, 0),
+                Position::new(3, 0),
+                Position::new(4, 0),
+            ],
+        );
+    }
+
+    #[test]
+    fn top_left_has_three_tiles_to_the_right() {
+        let top_left = Position::new(0, 0);
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(
+            board.tiles_in_direction(top_left, Offset::new(0, 1)),
+            vec![
+                Position::new(0, 1),
+                Position::new(0, 2),
+                Position::new(0, 3),
+            ],
+        );
+    }
+
+    #[test]
+    fn top_left_has_no_tiles_above() {
+        let top_left = Position::new(0, 0);
+        let board = BoardShape::new(5, 4);
+
+        assert!(board
+            .tiles_in_direction(top_left, Offset::new(-1, 0))
+            .is_empty());
+    }
+
+    #[test]
+    fn top_left_has_no_tiles_to_the_left() {
+        let top_left = Position::new(0, 0);
+        let board = BoardShape::new(5, 4);
+
+        assert!(board
+            .tiles_in_direction(top_left, Offset::new(0, -1))
+            .is_empty());
     }
 }
