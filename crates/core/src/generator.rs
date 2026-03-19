@@ -32,6 +32,9 @@ pub struct ClueScoreTerms {
     pub combination_size: usize,
     pub combined_new_forced: usize,
     pub standalone_forced: usize,
+    pub active_unforced_tiles: usize,
+    pub newly_active_unforced_tiles: i32,
+    pub active_uncertainty: f64,
     pub combined_gain: f64,
     pub alone_gain: f64,
     pub synergy_gain: f64,
@@ -664,7 +667,7 @@ fn sample_named_count_cells_clue<R: Rng + ?Sized>(
             continue;
         }
 
-        let filter = sample_filter(rng);
+        let filter = sample_filter_for_selector(rng, &selector);
         let positions = if filter == CellFilter::Any {
             all_positions.clone()
         } else {
@@ -716,7 +719,7 @@ fn sample_count_cells_clue<R: Rng + ?Sized>(
             continue;
         }
 
-        let filter = sample_filter(rng);
+        let filter = sample_filter_for_selector(rng, &selector);
         let positions = if filter == CellFilter::Any {
             all_positions.clone()
         } else {
@@ -903,7 +906,11 @@ fn sample_selector<R: Rng + ?Sized>(rng: &mut R, layout: &Layout) -> Option<Cell
     })
 }
 
-fn sample_filter<R: Rng + ?Sized>(rng: &mut R) -> CellFilter {
+fn sample_filter_for_selector<R: Rng + ?Sized>(rng: &mut R, selector: &CellSelector) -> CellFilter {
+    if matches!(selector, CellSelector::Direction { .. }) {
+        return CellFilter::Any;
+    }
+
     match rng.gen_range(0..5) {
         0 => CellFilter::Any,
         1 => CellFilter::Edge,
@@ -1063,11 +1070,21 @@ fn build_clue_score_terms(
     let synergy_gain = (combined_gain - alone_gain).max(0.0);
     let standalone_forced = forced_unknown_indices(&alone.analysis, known_mask).len();
     let combined_new_forced = newly_forced.len();
+    let baseline_active_unforced = active_unforced_tile_count(baseline, known_mask);
+    let active_unforced_tiles = active_unforced_tile_count(combined, known_mask);
+    let newly_active_unforced_tiles =
+        active_unforced_tiles as i32 - baseline_active_unforced as i32;
+    let active_uncertainty = active_uncertainty(combined, known_mask);
     let triviality_penalty = triviality_penalty(layout, clue);
     let family_weight = family_weight(clue);
 
     let score = combination_size_bonus(combination_size)
         + combined_force_score(combined_new_forced)
+        + active_state_bonus(
+            active_unforced_tiles,
+            newly_active_unforced_tiles,
+            active_uncertainty,
+        )
         + synergy_bonus(synergy_gain, combination_size, standalone_forced)
         + moderate_information_bonus(combined_gain)
         - standalone_force_penalty(standalone_forced)
@@ -1080,6 +1097,9 @@ fn build_clue_score_terms(
         combination_size,
         combined_new_forced,
         standalone_forced,
+        active_unforced_tiles,
+        newly_active_unforced_tiles,
+        active_uncertainty,
         combined_gain,
         alone_gain,
         synergy_gain,
@@ -1109,6 +1129,16 @@ fn combined_force_score(count: usize) -> f64 {
     }
 }
 
+fn active_state_bonus(
+    active_unforced_tiles: usize,
+    newly_active_unforced_tiles: i32,
+    active_uncertainty: f64,
+) -> f64 {
+    0.18 * active_unforced_tiles as f64
+        + 0.7 * newly_active_unforced_tiles as f64
+        + 0.35 * active_uncertainty.min(8.0)
+}
+
 fn synergy_bonus(synergy_gain: f64, combination_size: usize, standalone_forced: usize) -> f64 {
     let capped = synergy_gain.min(2.0);
 
@@ -1117,6 +1147,38 @@ fn synergy_bonus(synergy_gain: f64, combination_size: usize, standalone_forced: 
     } else {
         0.35 * capped
     }
+}
+
+fn active_unforced_tile_count(solution: &SolutionSet, known_mask: u32) -> usize {
+    (0..CELL_COUNT)
+        .filter(|index| solution.implicated_mask & (1u32 << index) != 0)
+        .filter(|index| known_mask & (1u32 << index) == 0)
+        .filter(|index| forced_answer_at(&solution.analysis, *index) == ForcedAnswer::Neither)
+        .count()
+}
+
+fn active_uncertainty(solution: &SolutionSet, known_mask: u32) -> f64 {
+    if solution.assignments.is_empty() {
+        return 0.0;
+    }
+
+    let assignment_count = solution.assignments.len() as f64;
+
+    (0..CELL_COUNT)
+        .filter(|index| solution.implicated_mask & (1u32 << index) != 0)
+        .filter(|index| solution.variable_mask & (1u32 << index) != 0)
+        .filter(|index| known_mask & (1u32 << index) == 0)
+        .map(|index| {
+            let innocent_count = solution
+                .assignments
+                .iter()
+                .filter(|assignment| *assignment & (1u32 << index) != 0)
+                .count() as f64;
+            let probability = innocent_count / assignment_count;
+
+            1.0 - (2.0 * probability - 1.0).abs()
+        })
+        .sum()
 }
 
 fn moderate_information_bonus(combined_gain: f64) -> f64 {
@@ -1401,11 +1463,12 @@ mod tests {
 
     use super::{
         BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, GenerationInstrumentation,
-        Layout, ROWS, SID_NAME, combination_size_bonus, distinct_roles, empty_puzzle,
-        exact_count_triviality, family_weight, filter_is_redundant, generate_puzzle_with_rng,
+        Layout, ROWS, SID_NAME, active_state_bonus, active_uncertainty, active_unforced_tile_count,
+        combination_size_bonus, distinct_roles, empty_puzzle, exact_count_triviality,
+        family_weight, filter_is_redundant, generate_puzzle_with_rng,
         generate_puzzle_with_rng_and_instrumentation, generate_puzzle_with_seed,
         minimal_forcing_subset_size, normalize_generated_clue, sample_line_comparison_clue,
-        sample_roles, sample_witness_assignment,
+        sample_filter_for_selector, sample_roles, sample_witness_assignment,
     };
 
     fn blank_analysis() -> ClueAnalysis {
@@ -1534,11 +1597,13 @@ mod tests {
             analysis: blank_analysis(),
             assignments: vec![1, 2, 3],
             variable_mask: 0,
+            implicated_mask: 0,
         };
         let solved = SolutionSet {
             analysis: blank_analysis(),
             assignments: vec![1, 2, 3],
             variable_mask: 0,
+            implicated_mask: 0,
         };
 
         let (effective, _, newly_forced, forced_unknown) = normalize_generated_clue(
@@ -1575,11 +1640,13 @@ mod tests {
             analysis: blank_analysis(),
             assignments: vec![0],
             variable_mask: 0,
+            implicated_mask: 0,
         };
         let solved = SolutionSet {
             analysis: solved_analysis.clone(),
             assignments: vec![1],
             variable_mask: 1,
+            implicated_mask: 1,
         };
 
         let (effective, solved, newly_forced, forced_unknown) = normalize_generated_clue(
@@ -1610,11 +1677,13 @@ mod tests {
             analysis: blank_analysis(),
             assignments: vec![1, 2, 3],
             variable_mask: 0,
+            implicated_mask: 0,
         };
         let solved = SolutionSet {
             analysis: blank_analysis(),
             assignments: vec![1, 2, 3],
             variable_mask: 0,
+            implicated_mask: 0,
         };
 
         let (effective, _, _, _) = normalize_generated_clue(
@@ -1642,6 +1711,7 @@ mod tests {
             analysis: blank_analysis(),
             assignments: vec![0b0101],
             variable_mask: 0b0001,
+            implicated_mask: 0b0101,
         };
 
         let witness = sample_witness_assignment(&mut rng, &solution, 0b0100).unwrap();
@@ -1676,6 +1746,19 @@ mod tests {
             &left_column,
             &left_column,
         ));
+    }
+
+    #[test]
+    fn direction_selectors_only_sample_any_filter() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let selector = CellSelector::Direction {
+            name: "Anna".to_string(),
+            direction: crate::clue::Direction::Left,
+        };
+
+        for _ in 0..32 {
+            assert_eq!(sample_filter_for_selector(&mut rng, &selector), CellFilter::Any);
+        }
     }
 
     #[test]
@@ -1742,6 +1825,22 @@ mod tests {
         assert_eq!(combination_size_bonus(1), 0.0);
         assert!(combination_size_bonus(2) > combination_size_bonus(1));
         assert!(combination_size_bonus(3) > combination_size_bonus(2));
+    }
+
+    #[test]
+    fn active_state_metrics_reward_unforced_implicated_tiles() {
+        let mut analysis = blank_analysis();
+        analysis.forced_answers[0][1] = ForcedAnswer::Innocent;
+        let solution = SolutionSet {
+            analysis,
+            assignments: vec![0b0000, 0b0001],
+            variable_mask: 0b0011,
+            implicated_mask: 0b0011,
+        };
+
+        assert_eq!(active_unforced_tile_count(&solution, 0), 1);
+        assert!((active_uncertainty(&solution, 0) - 1.0).abs() < 1e-9);
+        assert!(active_state_bonus(1, 1, 1.0) > active_state_bonus(0, 0, 0.0));
     }
 
     #[test]

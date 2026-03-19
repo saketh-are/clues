@@ -31,6 +31,7 @@ pub(crate) struct SolutionSet {
     pub analysis: ClueAnalysis,
     pub assignments: Vec<u32>,
     pub variable_mask: u32,
+    pub implicated_mask: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +186,7 @@ pub(crate) fn solve_clues_with_known_mask(
         ),
         assignments,
         variable_mask,
+        implicated_mask,
     })
 }
 
