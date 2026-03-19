@@ -86,9 +86,7 @@ fn generate_puzzle_with_rng_and_instrumentation<R: Rng + ?Sized>(
 ) -> Result<GeneratedPuzzle, GenerateError> {
     for _ in 0..MAX_PUZZLE_ATTEMPTS {
         let mut attempt_instrumentation = GenerationInstrumentation::default();
-        if let Some(generated) =
-            try_generate_puzzle(rng, Some(&mut attempt_instrumentation))?
-        {
+        if let Some(generated) = try_generate_puzzle(rng, Some(&mut attempt_instrumentation))? {
             if let Some(global) = instrumentation.as_deref_mut() {
                 global.merge(attempt_instrumentation);
             }
@@ -195,6 +193,7 @@ impl Layout {
                 CellFilter::Any => true,
                 CellFilter::Edge => self.board.is_edge(*position),
                 CellFilter::Corner => self.board.is_corner(*position),
+                CellFilter::Line(line) => self.positions_for_line(line).contains(position),
             })
             .collect()
     }
@@ -446,7 +445,9 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
             terms,
         } = selected;
         if let Some(stats) = instrumentation.as_deref_mut() {
-            stats.selected_combination_sizes.push(terms.combination_size);
+            stats
+                .selected_combination_sizes
+                .push(terms.combination_size);
         }
         let analysis = solution.analysis;
 
@@ -628,7 +629,8 @@ fn reveal_answer(
 fn sample_clue<R: Rng + ?Sized>(rng: &mut R, layout: &Layout, assignment: u32) -> Option<Clue> {
     for _ in 0..32 {
         let candidate = match rng.gen_range(0..10) {
-            0..=5 => sample_count_cells_clue(rng, layout, assignment),
+            0..=4 => sample_count_cells_clue(rng, layout, assignment),
+            5 => sample_named_count_cells_clue(rng, layout, assignment),
             6..=7 => sample_direct_relation_clue(rng, layout, assignment),
             8 => sample_role_count_clue(rng, layout, assignment),
             9 => {
@@ -644,6 +646,58 @@ fn sample_clue<R: Rng + ?Sized>(rng: &mut R, layout: &Layout, assignment: u32) -
         if candidate.is_some() {
             return candidate;
         }
+    }
+
+    None
+}
+
+fn sample_named_count_cells_clue<R: Rng + ?Sized>(
+    rng: &mut R,
+    layout: &Layout,
+    assignment: u32,
+) -> Option<Clue> {
+    for _ in 0..32 {
+        let selector = sample_selector(rng, layout)?;
+        let all_positions = layout.positions_for_selector(&selector);
+
+        if all_positions.is_empty() {
+            continue;
+        }
+
+        let filter = sample_filter(rng);
+        let positions = if filter == CellFilter::Any {
+            all_positions.clone()
+        } else {
+            layout.filtered_positions(&selector, filter)
+        };
+
+        if filter_is_redundant(filter, &all_positions, &positions) || positions.is_empty() {
+            continue;
+        }
+
+        let answer = random_answer(rng);
+        let matching_positions = positions
+            .iter()
+            .copied()
+            .filter(|position| {
+                answer_for_index(assignment, layout.index_of_position(*position)) == answer
+            })
+            .collect::<Vec<_>>();
+
+        if matching_positions.is_empty() {
+            continue;
+        }
+
+        let member_position = *matching_positions.choose(rng)?;
+        let member_name = layout.names[layout.index_of_position(member_position)].clone();
+
+        return Some(Clue::NamedCountCells {
+            name: member_name,
+            selector,
+            answer,
+            number: matching_positions.len() as i32,
+            filter,
+        });
     }
 
     None
@@ -850,10 +904,12 @@ fn sample_selector<R: Rng + ?Sized>(rng: &mut R, layout: &Layout) -> Option<Cell
 }
 
 fn sample_filter<R: Rng + ?Sized>(rng: &mut R) -> CellFilter {
-    match rng.gen_range(0..3) {
+    match rng.gen_range(0..5) {
         0 => CellFilter::Any,
         1 => CellFilter::Edge,
-        _ => CellFilter::Corner,
+        2 => CellFilter::Corner,
+        3 => CellFilter::Line(Line::Row(rng.gen_range(0..ROWS as u8))),
+        _ => CellFilter::Line(Line::Col(random_column(rng))),
     }
 }
 
@@ -1112,6 +1168,21 @@ fn family_weight(clue: &Clue) -> f64 {
                 }
             }
         }
+        Clue::NamedCountCells {
+            selector, filter, ..
+        } => {
+            let filter_bonus = if *filter == CellFilter::Any { 0.0 } else { 0.2 };
+            let selector_weight = match selector {
+                CellSelector::Board => -1.0,
+                CellSelector::Row { .. } | CellSelector::Col { .. } => -0.7,
+                CellSelector::Direction { .. } => -0.2,
+                CellSelector::Neighbor { .. }
+                | CellSelector::Between { .. }
+                | CellSelector::SharedNeighbor { .. } => 0.35,
+            };
+
+            selector_weight + filter_bonus
+        }
         Clue::DirectRelation { .. } => -1.0,
         Clue::RoleCount { count, .. } => match count {
             Count::Parity(_) => 0.9,
@@ -1132,6 +1203,9 @@ fn triviality_penalty(layout: &Layout, clue: &Clue) -> f64 {
             count: Count::Number(_),
             filter,
             ..
+        } => Some(layout.filtered_positions(selector, *filter).len() as i32),
+        Clue::NamedCountCells {
+            selector, filter, ..
         } => Some(layout.filtered_positions(selector, *filter).len() as i32),
         Clue::DirectRelation { .. } => Some(1),
         Clue::RoleCount {
@@ -1154,6 +1228,7 @@ fn triviality_penalty(layout: &Layout, clue: &Clue) -> f64 {
                 count: Count::Number(number),
                 ..
             }
+            | Clue::NamedCountCells { number, .. }
             | Clue::RoleCount {
                 count: Count::Number(number),
                 ..
@@ -1325,12 +1400,12 @@ mod tests {
     };
 
     use super::{
-        BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, ROWS, SID_NAME,
-        combination_size_bonus, distinct_roles, empty_puzzle, exact_count_triviality,
-        family_weight, filter_is_redundant, generate_puzzle_with_rng,
+        BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, GenerationInstrumentation,
+        Layout, ROWS, SID_NAME, combination_size_bonus, distinct_roles, empty_puzzle,
+        exact_count_triviality, family_weight, filter_is_redundant, generate_puzzle_with_rng,
         generate_puzzle_with_rng_and_instrumentation, generate_puzzle_with_seed,
         minimal_forcing_subset_size, normalize_generated_clue, sample_line_comparison_clue,
-        sample_roles, sample_witness_assignment, GenerationInstrumentation, Layout,
+        sample_roles, sample_witness_assignment,
     };
 
     fn blank_analysis() -> ClueAnalysis {

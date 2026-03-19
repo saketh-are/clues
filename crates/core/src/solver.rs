@@ -51,6 +51,12 @@ enum CompiledClue {
         answer: Answer,
         count: Count,
     },
+    CountWithMember {
+        mask: BitMask,
+        member_mask: BitMask,
+        answer: Answer,
+        number: i32,
+    },
     Compare {
         left_mask: BitMask,
         right_mask: BitMask,
@@ -62,17 +68,28 @@ enum CompiledClue {
         answer: Answer,
     },
     Quantified {
-        group_mask: BitMask,
+        group: CompiledGroup,
         predicate: CompiledPredicate,
         quantifier: Quantifier,
     },
 }
 
 #[derive(Debug, Clone)]
-struct CompiledPredicate {
-    masks_by_origin: [BitMask; CELL_COUNT],
-    answer: Answer,
-    count: Count,
+enum CompiledGroup {
+    Static { mask: BitMask },
+    Answered { mask: BitMask, answer: Answer },
+}
+
+#[derive(Debug, Clone)]
+enum CompiledPredicate {
+    Count {
+        masks_by_origin: [BitMask; CELL_COUNT],
+        answer: Answer,
+        count: Count,
+    },
+    Structural {
+        matching_origins: BitMask,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -249,6 +266,9 @@ impl CompileContext {
         match clue {
             CompiledClue::Nonsense => 0,
             CompiledClue::Count { mask, .. } => *mask,
+            CompiledClue::CountWithMember {
+                mask, member_mask, ..
+            } => *mask | *member_mask,
             CompiledClue::Compare {
                 left_mask,
                 right_mask,
@@ -256,12 +276,11 @@ impl CompileContext {
             } => *left_mask | *right_mask,
             CompiledClue::Connected { mask, .. } => *mask,
             CompiledClue::Quantified {
-                group_mask,
-                predicate,
-                ..
-            } => (0..CELL_COUNT)
-                .filter(|index| group_mask & (1u32 << index) != 0)
-                .fold(0, |mask, index| mask | predicate.masks_by_origin[index]),
+                group, predicate, ..
+            } => {
+                self.implicated_mask_for_group(group)
+                    | self.implicated_mask_for_predicate(group, predicate)
+            }
         }
     }
 
@@ -343,9 +362,21 @@ impl CompileContext {
                 count,
                 filter,
             } => Ok(CompiledClue::Count {
-                mask: self.selector_mask(selector)? & self.filter_mask(*filter),
+                mask: self.selector_mask(selector)? & self.filter_mask(*filter)?,
                 answer: *answer,
                 count: *count,
+            }),
+            Clue::NamedCountCells {
+                name,
+                selector,
+                answer,
+                number,
+                filter,
+            } => Ok(CompiledClue::CountWithMember {
+                mask: self.selector_mask(selector)? & self.filter_mask(*filter)?,
+                member_mask: self.position_to_bit(self.name_position(name)?),
+                answer: *answer,
+                number: *number,
             }),
             Clue::Connected { answer, line } => Ok(CompiledClue::Connected {
                 mask: self.line_mask(*line)?,
@@ -396,11 +427,36 @@ impl CompileContext {
                 group,
                 predicate,
             } => Ok(CompiledClue::Quantified {
-                group_mask: self.group_mask(group)?,
+                group: self.compile_group(group)?,
                 predicate: self.compile_predicate(predicate)?,
                 quantifier: *quantifier,
             }),
         }
+    }
+
+    fn compile_group(&self, group: &PersonGroup) -> Result<CompiledGroup, SolveError> {
+        Ok(match group {
+            PersonGroup::Any => CompiledGroup::Static {
+                mask: self.full_mask,
+            },
+            PersonGroup::Filter { filter } => CompiledGroup::Static {
+                mask: self.filter_mask(*filter)?,
+            },
+            PersonGroup::Line { line } => CompiledGroup::Static {
+                mask: self.line_mask(*line)?,
+            },
+            PersonGroup::Role { role } => CompiledGroup::Static {
+                mask: self.role_mask(role),
+            },
+            PersonGroup::SelectedCells {
+                selector,
+                answer,
+                filter,
+            } => CompiledGroup::Answered {
+                mask: self.selector_mask(selector)? & self.filter_mask(*filter)?,
+                answer: *answer,
+            },
+        })
     }
 
     fn compile_predicate(
@@ -415,14 +471,15 @@ impl CompileContext {
                 count,
                 filter,
             } => {
+                let filter_mask = self.filter_mask(*filter)?;
                 for (index, position) in self.positions.iter().enumerate() {
                     masks_by_origin[index] = Self::positions_to_mask(
                         &self.board.touching_neighbors(*position),
                         self.cols as usize,
-                    ) & self.filter_mask(*filter);
+                    ) & filter_mask;
                 }
 
-                Ok(CompiledPredicate {
+                Ok(CompiledPredicate::Count {
                     masks_by_origin,
                     answer: *answer,
                     count: *count,
@@ -443,12 +500,18 @@ impl CompileContext {
                     }
                 }
 
-                Ok(CompiledPredicate {
+                Ok(CompiledPredicate::Count {
                     masks_by_origin,
                     answer: *answer,
                     count: Count::Number(1),
                 })
             }
+            PersonPredicate::Neighboring { name } => Ok(CompiledPredicate::Structural {
+                matching_origins: Self::positions_to_mask(
+                    &self.board.touching_neighbors(self.name_position(name)?),
+                    self.cols as usize,
+                ),
+            }),
         }
     }
 
@@ -460,6 +523,16 @@ impl CompileContext {
                 answer,
                 count,
             } => self.matches_count(assignment, *mask, *answer, *count),
+            CompiledClue::CountWithMember {
+                mask,
+                member_mask,
+                answer,
+                number,
+            } => {
+                mask & member_mask != 0
+                    && self.matches_count(assignment, *mask, *answer, Count::Number(*number))
+                    && self.matches_count(assignment, *member_mask, *answer, Count::Number(1))
+            }
             CompiledClue::Compare {
                 left_mask,
                 right_mask,
@@ -480,20 +553,13 @@ impl CompileContext {
                 .map(|selected| self.is_connected(selected))
                 .unwrap_or(true),
             CompiledClue::Quantified {
-                group_mask,
+                group,
                 predicate,
                 quantifier,
             } => {
                 let matching_people = (0..CELL_COUNT)
-                    .filter(|index| group_mask & (1u32 << index) != 0)
-                    .filter(|index| {
-                        self.matches_count(
-                            assignment,
-                            predicate.masks_by_origin[*index],
-                            predicate.answer,
-                            predicate.count,
-                        )
-                    })
+                    .filter(|index| self.group_contains(assignment, group, *index))
+                    .filter(|index| self.predicate_matches(assignment, predicate, *index))
                     .count() as i32;
 
                 match quantifier {
@@ -621,13 +687,56 @@ impl CompileContext {
         })
     }
 
-    fn group_mask(&self, group: &PersonGroup) -> Result<BitMask, SolveError> {
-        Ok(match group {
-            PersonGroup::Any => self.full_mask,
-            PersonGroup::Filter { filter } => self.filter_mask(*filter),
-            PersonGroup::Line { line } => self.line_mask(*line)?,
-            PersonGroup::Role { role } => self.role_mask(role),
-        })
+    fn group_contains(&self, assignment: BitMask, group: &CompiledGroup, index: usize) -> bool {
+        let bit = 1u32 << index;
+
+        match group {
+            CompiledGroup::Static { mask } => mask & bit != 0,
+            CompiledGroup::Answered { mask, answer } => {
+                mask & bit != 0 && self.matches_count(assignment, bit, *answer, Count::Number(1))
+            }
+        }
+    }
+
+    fn predicate_matches(
+        &self,
+        assignment: BitMask,
+        predicate: &CompiledPredicate,
+        index: usize,
+    ) -> bool {
+        match predicate {
+            CompiledPredicate::Count {
+                masks_by_origin,
+                answer,
+                count,
+            } => self.matches_count(assignment, masks_by_origin[index], *answer, *count),
+            CompiledPredicate::Structural { matching_origins } => {
+                matching_origins & (1u32 << index) != 0
+            }
+        }
+    }
+
+    fn implicated_mask_for_group(&self, group: &CompiledGroup) -> BitMask {
+        match group {
+            CompiledGroup::Static { mask } | CompiledGroup::Answered { mask, .. } => *mask,
+        }
+    }
+
+    fn implicated_mask_for_predicate(
+        &self,
+        group: &CompiledGroup,
+        predicate: &CompiledPredicate,
+    ) -> BitMask {
+        let candidate_mask = self.implicated_mask_for_group(group);
+
+        match predicate {
+            CompiledPredicate::Count {
+                masks_by_origin, ..
+            } => (0..CELL_COUNT)
+                .filter(|index| candidate_mask & (1u32 << index) != 0)
+                .fold(0, |mask, index| mask | masks_by_origin[index]),
+            CompiledPredicate::Structural { matching_origins } => *matching_origins,
+        }
     }
 
     fn role_mask(&self, role: &str) -> BitMask {
@@ -659,12 +768,13 @@ impl CompileContext {
         }
     }
 
-    fn filter_mask(&self, filter: CellFilter) -> BitMask {
-        match filter {
+    fn filter_mask(&self, filter: CellFilter) -> Result<BitMask, SolveError> {
+        Ok(match filter {
             CellFilter::Any => self.full_mask,
             CellFilter::Edge => self.edge_mask,
             CellFilter::Corner => self.corner_mask,
-        }
+            CellFilter::Line(line) => self.line_mask(line)?,
+        })
     }
 
     fn name_position(&self, name: &str) -> Result<Position, SolveError> {
@@ -785,6 +895,71 @@ mod tests {
             assert_eq!(forced_at(&analysis, row, col), ForcedAnswer::Innocent);
         }
         assert_eq!(forced_at(&analysis, 1, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn neighbor_selector_can_be_filtered_to_a_row() {
+        let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[1][1].name.clone();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Neighbor { name: anchor_name },
+            answer: Answer::Innocent,
+            count: Count::Number(3),
+            filter: CellFilter::Line(Line::Row(2)),
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(forced_at(&analysis, 2, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 2, 1), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 2, 2), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
+        assert_eq!(forced_at(&analysis, 1, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn named_count_cells_can_force_named_membership() {
+        let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[1][1].name.clone();
+        let member_name = puzzle.cells[2][0].name.clone();
+        let clues = [Clue::NamedCountCells {
+            name: member_name,
+            selector: CellSelector::Neighbor { name: anchor_name },
+            answer: Answer::Innocent,
+            number: 3,
+            filter: CellFilter::Line(Line::Row(2)),
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(forced_at(&analysis, 2, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 2, 1), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 2, 2), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
+        assert_eq!(forced_at(&analysis, 1, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn named_count_cells_supports_column_membership() {
+        let puzzle = test_puzzle();
+        let member_name = puzzle.cells[0][3].name.clone();
+        let clues = [Clue::NamedCountCells {
+            name: member_name,
+            selector: CellSelector::Col { col: Column::D },
+            answer: Answer::Criminal,
+            number: 5,
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for row in 0..5 {
+            assert_eq!(forced_at(&analysis, row, 3), ForcedAnswer::Criminal);
+        }
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
     }
 
     #[test]
@@ -1063,6 +1238,32 @@ mod tests {
             assert_eq!(forced_at(&analysis, row, 1), ForcedAnswer::Innocent);
         }
         assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn quantified_clue_can_select_answered_cells_and_apply_structural_predicate() {
+        let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[0][0].name.clone();
+        let gabe_name = puzzle.cells[1][0].name.clone();
+        let clues = [Clue::Quantified {
+            quantifier: Quantifier::Exactly(1),
+            group: PersonGroup::SelectedCells {
+                selector: CellSelector::Direction {
+                    name: anchor_name,
+                    direction: Direction::Right,
+                },
+                answer: Answer::Innocent,
+                filter: CellFilter::Any,
+            },
+            predicate: PersonPredicate::Neighboring { name: gabe_name },
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 2), ForcedAnswer::Neither);
+        assert_eq!(forced_at(&analysis, 0, 3), ForcedAnswer::Neither);
     }
 
     #[test]

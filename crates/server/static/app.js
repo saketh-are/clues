@@ -394,7 +394,7 @@ function completePuzzleIfNeeded() {
 }
 
 async function loadPuzzle(seed, options = {}) {
-  const { forceStartModal = false } = options;
+  const { forceStartModal = false, suppressStartModal = false } = options;
   const normalizedSeed = normalizeSeed(seed);
   const query = normalizedSeed === null ? "" : `?seed=${encodeURIComponent(normalizedSeed)}`;
 
@@ -455,7 +455,7 @@ async function loadPuzzle(seed, options = {}) {
     return;
   }
 
-  if (forceStartModal || state.timerStartedAt === null) {
+  if (!suppressStartModal && (forceStartModal || state.timerStartedAt === null)) {
     openStartModal();
   }
 }
@@ -1008,7 +1008,7 @@ function renderScoreDebugPanel() {
     try {
       state.scoreDebugVisible = true;
       state.scoreDebugTab = "generated";
-      await loadPuzzle();
+      await loadPuzzle(undefined, { suppressStartModal: true });
     } catch (error) {
       openErrorModal(error.message);
     }
@@ -1272,6 +1272,11 @@ async function setGuess(row, col, nextGuess) {
   try {
     const clueResult = await fetchValidatedClue(row, col, nextGuess);
     applyAcceptedGuess(row, col, nextGuess, clueResult);
+    if (state.timerStartedAt === null) {
+      state.timerStartedAt = Date.now();
+      state.timerCompletedAt = null;
+      state.completionAcknowledged = false;
+    }
     persistProgress();
     closeGuessModal();
     completePuzzleIfNeeded();

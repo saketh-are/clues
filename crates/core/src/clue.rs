@@ -167,14 +167,16 @@ pub enum CellFilter {
     Any,
     Edge,
     Corner,
+    Line(Line),
 }
 
 impl CellFilter {
-    pub const fn suffix(self) -> &'static str {
+    pub fn suffix(self) -> String {
         match self {
-            Self::Any => "",
-            Self::Edge => " on the edges",
-            Self::Corner => " in the corners",
+            Self::Any => String::new(),
+            Self::Edge => " on the edges".to_string(),
+            Self::Corner => " in the corners".to_string(),
+            Self::Line(line) => format!(" in {line}"),
         }
     }
 }
@@ -337,17 +339,53 @@ fn answer_with_article(answer: Answer) -> &'static str {
     }
 }
 
+fn possessive(name: &str) -> String {
+    if name.ends_with('s') {
+        format!("{name}'")
+    } else {
+        format!("{name}'s")
+    }
+}
+
 fn singular_role(role: &str) -> String {
     role.to_lowercase()
+}
+
+fn pluralize_answer(answer: Answer, singular: bool) -> String {
+    if singular {
+        answer.to_string()
+    } else {
+        format!("{answer}s")
+    }
+}
+
+fn direction_scope_text(direction: Direction, name: &str) -> String {
+    match direction {
+        Direction::Above => format!("above {name}"),
+        Direction::Below => format!("below {name}"),
+        Direction::Left => format!("to the left of {name}"),
+        Direction::Right => format!("to the right of {name}"),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum PersonGroup {
     Any,
-    Filter { filter: CellFilter },
-    Line { line: Line },
-    Role { role: Role },
+    Filter {
+        filter: CellFilter,
+    },
+    Line {
+        line: Line,
+    },
+    Role {
+        role: Role,
+    },
+    SelectedCells {
+        selector: CellSelector,
+        answer: Answer,
+        filter: CellFilter,
+    },
 }
 
 impl PersonGroup {
@@ -387,6 +425,15 @@ impl PersonGroup {
                     "people in the corners".to_string()
                 }
             }
+            Self::Filter {
+                filter: CellFilter::Line(line),
+            } => {
+                if singular {
+                    format!("person in {line}")
+                } else {
+                    format!("people in {line}")
+                }
+            }
             Self::Line { line } => {
                 if singular {
                     format!("person in {line}")
@@ -399,6 +446,45 @@ impl PersonGroup {
                     singular_role(role)
                 } else {
                     pluralize_role(role)
+                }
+            }
+            Self::SelectedCells {
+                selector,
+                answer,
+                filter,
+            } => {
+                let answer_text = pluralize_answer(*answer, singular);
+                let suffix = filter.suffix();
+
+                match selector {
+                    CellSelector::Board => format!("{answer_text}{suffix}"),
+                    CellSelector::Neighbor { name } => {
+                        let noun = if singular { "neighbor" } else { "neighbors" };
+                        format!("{answer_text} {noun} of {name}{suffix}")
+                    }
+                    CellSelector::Direction { name, direction } => {
+                        format!(
+                            "{answer_text} {}{suffix}",
+                            direction_scope_text(*direction, name)
+                        )
+                    }
+                    CellSelector::Row { row } => {
+                        format!("{answer_text} in row {}{suffix}", display_row(*row))
+                    }
+                    CellSelector::Col { col } => format!("{answer_text} in col {col}{suffix}"),
+                    CellSelector::Between {
+                        first_name,
+                        second_name,
+                    } => format!("{answer_text} between {first_name} and {second_name}{suffix}"),
+                    CellSelector::SharedNeighbor {
+                        first_name,
+                        second_name,
+                    } => {
+                        let noun = if singular { "neighbor" } else { "neighbors" };
+                        format!(
+                            "{answer_text} {noun} shared by {first_name} and {second_name}{suffix}"
+                        )
+                    }
                 }
             }
         }
@@ -416,6 +502,9 @@ pub enum PersonPredicate {
     DirectRelation {
         answer: Answer,
         direction: Direction,
+    },
+    Neighboring {
+        name: Name,
     },
 }
 
@@ -437,6 +526,9 @@ impl PersonPredicate {
                 if singular { "is" } else { "are" },
                 answer_with_article(*answer),
             ),
+            Self::Neighboring { name } => {
+                format!("{} neighboring {name}", if singular { "is" } else { "are" },)
+            }
         }
     }
 }
@@ -472,6 +564,13 @@ pub enum Clue {
         selector: CellSelector,
         answer: Answer,
         count: Count,
+        filter: CellFilter,
+    },
+    NamedCountCells {
+        name: Name,
+        selector: CellSelector,
+        answer: Answer,
+        number: i32,
         filter: CellFilter,
     },
     Connected {
@@ -517,6 +616,52 @@ impl Clue {
                 count,
                 filter,
             } => selector.text(*answer, *count, *filter),
+            Self::NamedCountCells {
+                name,
+                selector,
+                answer,
+                number,
+                filter,
+            } => match selector {
+                CellSelector::Board => {
+                    format!("{name} is one of the {number} {answer}s{}", filter.suffix())
+                }
+                CellSelector::Neighbor { name: anchor_name } => format!(
+                    "{name} is one of {} {number} {answer} neighbors{}",
+                    possessive(anchor_name),
+                    filter.suffix(),
+                ),
+                CellSelector::Direction {
+                    name: anchor_name,
+                    direction,
+                } => format!(
+                    "{name} is one of the {number} {answer}s {direction} {anchor_name}{}",
+                    filter.suffix(),
+                ),
+                CellSelector::Row { row } => format!(
+                    "{name} is one of the {number} {answer}s in row {}{}",
+                    display_row(*row),
+                    filter.suffix(),
+                ),
+                CellSelector::Col { col } => format!(
+                    "{name} is one of the {number} {answer}s in col {col}{}",
+                    filter.suffix(),
+                ),
+                CellSelector::Between {
+                    first_name,
+                    second_name,
+                } => format!(
+                    "{name} is one of the {number} {answer}s between {first_name} and {second_name}{}",
+                    filter.suffix(),
+                ),
+                CellSelector::SharedNeighbor {
+                    first_name,
+                    second_name,
+                } => format!(
+                    "{name} is one of the {number} {answer} neighbors shared by {first_name} and {second_name}{}",
+                    filter.suffix(),
+                ),
+            },
             Self::Connected { answer, line } => {
                 format!("all {answer}s in {line} are connected")
             }
@@ -568,7 +713,9 @@ impl Clue {
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
             Self::Nonsense { .. } => &[],
-            Self::CountCells { selector, .. } => selector.neighbor_offsets(),
+            Self::CountCells { selector, .. } | Self::NamedCountCells { selector, .. } => {
+                selector.neighbor_offsets()
+            }
             Self::Connected { .. }
             | Self::DirectRelation { .. }
             | Self::RoleCount { .. }
@@ -581,7 +728,9 @@ impl Clue {
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
             Self::Nonsense { .. } => None,
-            Self::CountCells { selector, .. } => selector.direction_offset(),
+            Self::CountCells { selector, .. } | Self::NamedCountCells { selector, .. } => {
+                selector.direction_offset()
+            }
             Self::DirectRelation { direction, .. } => Some(direction.offset()),
             Self::Connected { .. }
             | Self::RoleCount { .. }
@@ -652,6 +801,23 @@ mod tests {
         assert_eq!(
             clue.text(),
             "Ada has an odd number of innocent neighbors on the edges",
+        );
+    }
+
+    #[test]
+    fn neighbor_renders_line_filtered_parity_puzzle_text() {
+        let clue = Clue::CountCells {
+            selector: CellSelector::Neighbor {
+                name: "Ada".to_string(),
+            },
+            answer: Answer::Innocent,
+            count: Count::Parity(Parity::Odd),
+            filter: CellFilter::Line(Line::Row(2)),
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Ada has an odd number of innocent neighbors in row 3",
         );
     }
 
@@ -806,6 +972,34 @@ mod tests {
     }
 
     #[test]
+    fn named_count_cells_renders_neighbor_membership_puzzle_text() {
+        let clue = Clue::NamedCountCells {
+            name: "Tina".to_string(),
+            selector: CellSelector::Neighbor {
+                name: "Stella".to_string(),
+            },
+            answer: Answer::Criminal,
+            number: 5,
+            filter: CellFilter::Any,
+        };
+
+        assert_eq!(clue.text(), "Tina is one of Stella's 5 criminal neighbors");
+    }
+
+    #[test]
+    fn named_count_cells_renders_column_membership_puzzle_text() {
+        let clue = Clue::NamedCountCells {
+            name: "Ivan".to_string(),
+            selector: CellSelector::Col { col: Column::D },
+            answer: Answer::Criminal,
+            number: 3,
+            filter: CellFilter::Any,
+        };
+
+        assert_eq!(clue.text(), "Ivan is one of the 3 criminals in col D");
+    }
+
+    #[test]
     fn role_count_renders_puzzle_text() {
         let clue = Clue::RoleCount {
             role: "Coach".to_string(),
@@ -912,6 +1106,29 @@ mod tests {
         assert_eq!(
             clue.text(),
             "Exactly 1 sleuth is directly left of an innocent",
+        );
+    }
+
+    #[test]
+    fn exactly_one_selected_person_renders_neighboring_puzzle_text() {
+        let clue = Clue::Quantified {
+            quantifier: Quantifier::Exactly(1),
+            group: PersonGroup::SelectedCells {
+                selector: CellSelector::Direction {
+                    name: "Anna".to_string(),
+                    direction: Direction::Right,
+                },
+                answer: Answer::Innocent,
+                filter: CellFilter::Any,
+            },
+            predicate: PersonPredicate::Neighboring {
+                name: "Gabe".to_string(),
+            },
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Exactly 1 innocent to the right of Anna is neighboring Gabe",
         );
     }
 
