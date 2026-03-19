@@ -116,6 +116,7 @@ impl CellFilter {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CellSelector {
+    Board,
     Neighbor { name: Name },
     Direction { name: Name, direction: Direction },
     Row { row: u8 },
@@ -146,6 +147,11 @@ impl Count {
 impl CellSelector {
     fn text(&self, answer: Answer, count: Count, filter: CellFilter) -> String {
         match self {
+            Self::Board => format!(
+                "there are {}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
             Self::Neighbor { name } => format!(
                 "{name} has {} neighbors{}",
                 count.describe(&answer.to_string()),
@@ -187,6 +193,7 @@ impl CellSelector {
 
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
+            Self::Board => &[],
             Self::Neighbor { .. } | Self::SharedNeighbor { .. } => &TOUCHING_NEIGHBOR_OFFSETS,
             Self::Direction { .. }
             | Self::Row { .. }
@@ -198,7 +205,8 @@ impl CellSelector {
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
             Self::Direction { direction, .. } => Some(direction.offset()),
-            Self::Neighbor { .. }
+            Self::Board
+            | Self::Neighbor { .. }
             | Self::Row { .. }
             | Self::Col { .. }
             | Self::Between { .. }
@@ -221,6 +229,18 @@ impl Comparison {
             Self::More => format!("there are more {left} than there are {right}"),
             Self::Fewer => format!("there are fewer {left} than there are {right}"),
             Self::Equal => format!("there are as many {left} as there are {right}"),
+        }
+    }
+
+    fn describe_in(self, noun: &str, first_scope: &str, second_scope: &str) -> String {
+        match self {
+            Self::More => format!("there are more {noun} in {first_scope} than in {second_scope}"),
+            Self::Fewer => {
+                format!("there are fewer {noun} in {first_scope} than in {second_scope}")
+            }
+            Self::Equal => format!(
+                "there are as many {noun} in {first_scope} as in {second_scope}"
+            ),
         }
     }
 }
@@ -405,6 +425,12 @@ pub enum Clue {
         answer: Answer,
         comparison: Comparison,
     },
+    LineComparison {
+        first_line: Line,
+        second_line: Line,
+        answer: Answer,
+        comparison: Comparison,
+    },
     Quantified {
         quantifier: Quantifier,
         group: PersonGroup,
@@ -446,6 +472,12 @@ impl Clue {
                 &answer_roles(*answer, first_role),
                 &answer_roles(*answer, second_role),
             ),
+            Self::LineComparison {
+                first_line,
+                second_line,
+                answer,
+                comparison,
+            } => comparison.describe_in(&format!("{answer}s"), &first_line.to_string(), &second_line.to_string()),
             Self::Quantified {
                 quantifier,
                 group,
@@ -466,6 +498,7 @@ impl Clue {
             | Self::DirectRelation { .. }
             | Self::RoleCount { .. }
             | Self::RolesComparison { .. }
+            | Self::LineComparison { .. }
             | Self::Quantified { .. } => &[],
         }
     }
@@ -477,6 +510,7 @@ impl Clue {
             Self::Connected { .. }
             | Self::RoleCount { .. }
             | Self::RolesComparison { .. }
+            | Self::LineComparison { .. }
             | Self::Quantified { .. } => None,
         }
     }
@@ -505,6 +539,18 @@ mod tests {
         };
 
         assert_eq!(clue.text(), "Ada has 3 innocent neighbors");
+    }
+
+    #[test]
+    fn board_renders_corner_filtered_parity_puzzle_text() {
+        let clue = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Innocent,
+            count: Count::Parity(Parity::Even),
+            filter: CellFilter::Corner,
+        };
+
+        assert_eq!(clue.text(), "there are an even number of innocents in the corners");
     }
 
     #[test]
@@ -724,6 +770,21 @@ mod tests {
         assert_eq!(
             clue.text(),
             "there are as many criminal coaches as there are criminal coders",
+        );
+    }
+
+    #[test]
+    fn line_comparison_renders_puzzle_text() {
+        let clue = Clue::LineComparison {
+            first_line: Line::Row(1),
+            second_line: Line::Col(Column::B),
+            answer: Answer::Innocent,
+            comparison: Comparison::More,
+        };
+
+        assert_eq!(
+            clue.text(),
+            "there are more innocents in row 1 than in col B",
         );
     }
 
