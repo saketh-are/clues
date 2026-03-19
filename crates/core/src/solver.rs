@@ -44,6 +44,7 @@ pub enum SolveError {
 
 #[derive(Debug, Clone)]
 enum CompiledClue {
+    Nonsense,
     Count {
         mask: BitMask,
         answer: Answer,
@@ -129,11 +130,24 @@ pub(crate) fn solve_clues_with_known_mask(
 
     let known_mask = known_mask & context.full_mask;
     let known_innocent_mask = known_innocent_mask & known_mask;
+    let implicated_mask = compiled_clues
+        .iter()
+        .fold(0, |mask, clue| mask | context.implicated_mask(clue));
+    let variable_mask = implicated_mask & !known_mask;
+    let variable_bits = (0..CELL_COUNT)
+        .map(|index| 1u32 << index)
+        .filter(|bit| variable_mask & bit != 0)
+        .collect::<Vec<_>>();
+    let base_assignment = known_innocent_mask;
     let mut assignments = Vec::new();
 
-    for assignment in 0..=context.full_mask {
-        if assignment & known_mask != known_innocent_mask {
-            continue;
+    for subset in 0..(1u64 << variable_bits.len()) {
+        let mut assignment = base_assignment;
+
+        for (index, bit) in variable_bits.iter().enumerate() {
+            if subset & (1u64 << index) != 0 {
+                assignment |= *bit;
+            }
         }
 
         if compiled_clues
@@ -145,7 +159,12 @@ pub(crate) fn solve_clues_with_known_mask(
     }
 
     Ok(SolutionSet {
-        analysis: context.analysis_from_assignments(&assignments),
+        analysis: context.analysis_from_assignments(
+            &assignments,
+            known_mask,
+            known_innocent_mask,
+            variable_mask,
+        ),
         assignments,
     })
 }
@@ -174,7 +193,13 @@ fn known_masks_from_revealed_cells(puzzle: &Puzzle) -> Result<(BitMask, BitMask)
 }
 
 impl CompileContext {
-    fn analysis_from_assignments(&self, assignments: &[BitMask]) -> ClueAnalysis {
+    fn analysis_from_assignments(
+        &self,
+        assignments: &[BitMask],
+        known_mask: BitMask,
+        known_innocent_mask: BitMask,
+        variable_mask: BitMask,
+    ) -> ClueAnalysis {
         let mut always_innocent = self.full_mask;
         let mut always_criminal = self.full_mask;
 
@@ -192,7 +217,15 @@ impl CompileContext {
                         }
 
                         let bit = 1u32 << (row * self.cols as usize + col);
-                        if always_innocent & bit != 0 {
+                        if known_mask & bit != 0 {
+                            if known_innocent_mask & bit != 0 {
+                                ForcedAnswer::Innocent
+                            } else {
+                                ForcedAnswer::Criminal
+                            }
+                        } else if variable_mask & bit == 0 {
+                            ForcedAnswer::Neither
+                        } else if always_innocent & bit != 0 {
                             ForcedAnswer::Innocent
                         } else if always_criminal & bit != 0 {
                             ForcedAnswer::Criminal
@@ -207,6 +240,26 @@ impl CompileContext {
         ClueAnalysis {
             has_solution: !assignments.is_empty(),
             forced_answers,
+        }
+    }
+
+    fn implicated_mask(&self, clue: &CompiledClue) -> BitMask {
+        match clue {
+            CompiledClue::Nonsense => 0,
+            CompiledClue::Count { mask, .. } => *mask,
+            CompiledClue::Compare {
+                left_mask,
+                right_mask,
+                ..
+            } => *left_mask | *right_mask,
+            CompiledClue::Connected { mask, .. } => *mask,
+            CompiledClue::Quantified {
+                group_mask,
+                predicate,
+                ..
+            } => (0..CELL_COUNT)
+                .filter(|index| group_mask & (1u32 << index) != 0)
+                .fold(0, |mask, index| mask | predicate.masks_by_origin[index]),
         }
     }
 
@@ -281,11 +334,7 @@ impl CompileContext {
 
     fn compile_clue(&self, clue: &Clue) -> Result<CompiledClue, SolveError> {
         match clue {
-            Clue::Nonsense => Ok(CompiledClue::Count {
-                mask: self.full_mask,
-                answer: Answer::Innocent,
-                count: Count::AtLeast(0),
-            }),
+            Clue::Nonsense => Ok(CompiledClue::Nonsense),
             Clue::CountCells {
                 selector,
                 answer,
@@ -403,6 +452,7 @@ impl CompileContext {
 
     fn assignment_satisfies_clue(&self, assignment: BitMask, clue: &CompiledClue) -> bool {
         match clue {
+            CompiledClue::Nonsense => true,
             CompiledClue::Count {
                 mask,
                 answer,
@@ -639,9 +689,15 @@ impl CompileContext {
 #[cfg(test)]
 mod tests {
     use crate::{
-        clue::{CellFilter, CellSelector, Clue, Count, Direction, Quantifier},
+        clue::{
+            CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line,
+            PersonGroup, PersonPredicate, Quantifier,
+        },
         puzzle::{Cell, Puzzle, Visibility},
-        solver::{ForcedAnswer, analyze_clues, analyze_puzzle, analyze_revealed_puzzle},
+        solver::{
+            ClueAnalysis, ForcedAnswer, analyze_clues, analyze_puzzle, analyze_revealed_puzzle,
+            known_masks_from_revealed_cells, solve_clues_with_known_mask,
+        },
         types::{Answer, NAMES},
     };
 
@@ -674,6 +730,10 @@ mod tests {
         Puzzle { cells }
     }
 
+    fn forced_at(analysis: &ClueAnalysis, row: usize, col: usize) -> ForcedAnswer {
+        analysis.forced_answers[row][col]
+    }
+
     #[test]
     fn board_wide_innocent_count_forces_every_tile_innocent() {
         let puzzle = test_puzzle();
@@ -697,6 +757,139 @@ mod tests {
     }
 
     #[test]
+    fn neighbor_selector_can_force_touching_neighbors() {
+        let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[1][1].name.clone();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Neighbor { name: anchor_name },
+            answer: Answer::Innocent,
+            count: Count::Number(8),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for (row, col) in [
+            (0, 0),
+            (0, 1),
+            (0, 2),
+            (1, 0),
+            (1, 2),
+            (2, 0),
+            (2, 1),
+            (2, 2),
+        ] {
+            assert_eq!(forced_at(&analysis, row, col), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 1, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn direction_selector_can_force_a_full_ray() {
+        let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[0][0].name.clone();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Direction {
+                name: anchor_name,
+                direction: Direction::Below,
+            },
+            answer: Answer::Innocent,
+            count: Count::Number(4),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for row in 1..5 {
+            assert_eq!(forced_at(&analysis, row, 0), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn row_selector_can_force_an_entire_row() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Row { row: 0 },
+            answer: Answer::Innocent,
+            count: Count::Number(4),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for col in 0..4 {
+            assert_eq!(forced_at(&analysis, 0, col), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 1, 0), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn column_selector_can_force_an_entire_column() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Col { col: Column::A },
+            answer: Answer::Innocent,
+            count: Count::Number(5),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for row in 0..5 {
+            assert_eq!(forced_at(&analysis, row, 0), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn between_selector_can_force_cells_between_two_names() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Between {
+                first_name: puzzle.cells[0][0].name.clone(),
+                second_name: puzzle.cells[0][3].name.clone(),
+            },
+            answer: Answer::Innocent,
+            count: Count::Number(2),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 2), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn shared_neighbor_selector_can_force_common_neighbors() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::SharedNeighbor {
+                first_name: puzzle.cells[1][1].name.clone(),
+                second_name: puzzle.cells[1][2].name.clone(),
+            },
+            answer: Answer::Innocent,
+            count: Count::Number(4),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for (row, col) in [(0, 1), (0, 2), (2, 1), (2, 2)] {
+            assert_eq!(forced_at(&analysis, row, col), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 1, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
     fn direct_relation_can_force_a_single_tile() {
         let puzzle = test_puzzle();
         let anchor_name = puzzle.cells[0][1].name.clone();
@@ -709,8 +902,8 @@ mod tests {
         let analysis = analyze_clues(&puzzle, &clues).unwrap();
 
         assert!(analysis.has_solution);
-        assert_eq!(analysis.forced_answers[0][0], ForcedAnswer::Innocent);
-        assert_eq!(analysis.forced_answers[0][1], ForcedAnswer::Neither);
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Neither);
     }
 
     #[test]
@@ -736,6 +929,33 @@ mod tests {
     }
 
     #[test]
+    fn connected_clue_detects_disconnected_required_criminals() {
+        let puzzle = test_puzzle();
+        let clues = [
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 0 },
+                answer: Answer::Criminal,
+                count: Count::Number(2),
+                filter: CellFilter::Any,
+            },
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 0 },
+                answer: Answer::Criminal,
+                count: Count::Number(2),
+                filter: CellFilter::Corner,
+            },
+            Clue::Connected {
+                answer: Answer::Criminal,
+                line: Line::Row(0),
+            },
+        ];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(!analysis.has_solution);
+    }
+
+    #[test]
     fn analyze_puzzle_uses_cell_clues() {
         let mut puzzle = test_puzzle();
         puzzle.cells[0][0].clue = Clue::CountCells {
@@ -758,14 +978,77 @@ mod tests {
     }
 
     #[test]
-    fn quantified_clue_is_supported_by_solver() {
+    fn role_count_can_force_a_role_column() {
+        let puzzle = test_puzzle();
+        let clues = [Clue::RoleCount {
+            role: "Sleuth".to_string(),
+            answer: Answer::Innocent,
+            count: Count::Number(5),
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for row in 0..5 {
+            assert_eq!(forced_at(&analysis, row, 0), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn roles_comparison_detects_impossible_role_totals() {
+        let puzzle = test_puzzle();
+        let clues = [
+            Clue::RoleCount {
+                role: "Coder".to_string(),
+                answer: Answer::Innocent,
+                count: Count::Number(5),
+            },
+            Clue::RolesComparison {
+                first_role: "Sleuth".to_string(),
+                second_role: "Coder".to_string(),
+                answer: Answer::Innocent,
+                comparison: Comparison::More,
+            },
+        ];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(!analysis.has_solution);
+    }
+
+    #[test]
+    fn line_comparison_detects_impossible_line_totals() {
+        let puzzle = test_puzzle();
+        let clues = [
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 1 },
+                answer: Answer::Innocent,
+                count: Count::Number(4),
+                filter: CellFilter::Any,
+            },
+            Clue::LineComparison {
+                first_line: Line::Row(0),
+                second_line: Line::Row(1),
+                answer: Answer::Innocent,
+                comparison: Comparison::More,
+            },
+        ];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(!analysis.has_solution);
+    }
+
+    #[test]
+    fn quantified_clue_can_force_matching_neighbors() {
         let puzzle = test_puzzle();
         let clues = [Clue::Quantified {
-            quantifier: Quantifier::Exactly(1),
-            group: crate::clue::PersonGroup::Role {
+            quantifier: Quantifier::Exactly(5),
+            group: PersonGroup::Role {
                 role: "Sleuth".to_string(),
             },
-            predicate: crate::clue::PersonPredicate::DirectRelation {
+            predicate: PersonPredicate::DirectRelation {
                 answer: Answer::Innocent,
                 direction: Direction::Left,
             },
@@ -774,6 +1057,10 @@ mod tests {
         let analysis = analyze_clues(&puzzle, &clues).unwrap();
 
         assert!(analysis.has_solution);
+        for row in 0..5 {
+            assert_eq!(forced_at(&analysis, row, 1), ForcedAnswer::Innocent);
+        }
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Neither);
     }
 
     #[test]
@@ -794,6 +1081,74 @@ mod tests {
     }
 
     #[test]
+    fn solver_only_tracks_implicated_unknown_cells() {
+        let puzzle = test_puzzle();
+        let anchor_name = puzzle.cells[0][1].name.clone();
+        let clues = [Clue::DirectRelation {
+            name: anchor_name,
+            answer: Answer::Innocent,
+            direction: Direction::Left,
+        }];
+
+        let solved = solve_clues_with_known_mask(&puzzle, &clues, 0, 0).unwrap();
+
+        assert_eq!(solved.assignments.len(), 1);
+        assert_eq!(forced_at(&solved.analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&solved.analysis, 4, 3), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn row_and_column_counts_can_force_a_cross_pattern() {
+        let puzzle = test_puzzle();
+        let clues = [
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 0 },
+                answer: Answer::Innocent,
+                count: Count::Number(4),
+                filter: CellFilter::Any,
+            },
+            Clue::CountCells {
+                selector: CellSelector::Col { col: Column::A },
+                answer: Answer::Criminal,
+                count: Count::Number(4),
+                filter: CellFilter::Any,
+            },
+        ];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for col in 0..4 {
+            assert_eq!(forced_at(&analysis, 0, col), ForcedAnswer::Innocent);
+        }
+        for row in 1..5 {
+            assert_eq!(forced_at(&analysis, row, 0), ForcedAnswer::Criminal);
+        }
+    }
+
+    #[test]
+    fn mixed_clues_can_be_inconsistent() {
+        let puzzle = test_puzzle();
+        let clues = [
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 0 },
+                answer: Answer::Innocent,
+                count: Count::Number(4),
+                filter: CellFilter::Any,
+            },
+            Clue::RoleCount {
+                role: "Sleuth".to_string(),
+                answer: Answer::Criminal,
+                count: Count::Number(5),
+            },
+        ];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(!analysis.has_solution);
+    }
+
+    #[test]
     fn analyze_revealed_puzzle_treats_revealed_answers_as_known() {
         let mut puzzle = test_puzzle();
         puzzle.cells[0][0].state = Visibility::Revealed;
@@ -801,7 +1156,22 @@ mod tests {
         let analysis = analyze_revealed_puzzle(&puzzle).unwrap();
 
         assert!(analysis.has_solution);
-        assert_eq!(analysis.forced_answers[0][0], ForcedAnswer::Innocent);
-        assert_eq!(analysis.forced_answers[0][1], ForcedAnswer::Neither);
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Neither);
+    }
+
+    #[test]
+    fn revealed_cells_are_not_reenumerated_when_nothing_else_is_implicated() {
+        let mut puzzle = test_puzzle();
+        puzzle.cells[0][0].state = Visibility::Revealed;
+        let clues = [Clue::Nonsense];
+        let (known_mask, known_innocent_mask) = known_masks_from_revealed_cells(&puzzle).unwrap();
+
+        let solved =
+            solve_clues_with_known_mask(&puzzle, &clues, known_mask, known_innocent_mask).unwrap();
+
+        assert_eq!(solved.assignments.len(), 1);
+        assert_eq!(forced_at(&solved.analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&solved.analysis, 4, 3), ForcedAnswer::Neither);
     }
 }
