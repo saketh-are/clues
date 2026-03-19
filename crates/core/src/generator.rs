@@ -259,7 +259,7 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         let mut accepted = None;
 
         for _ in 0..MAX_CLUE_ATTEMPTS {
-            let Some(&witness) = baseline.assignments.choose(rng) else {
+            let Some(witness) = sample_witness_assignment(rng, &baseline, known_mask) else {
                 return Ok(None);
             };
 
@@ -497,8 +497,22 @@ fn sample_count_cells_clue<R: Rng + ?Sized>(
 ) -> Option<Clue> {
     for _ in 0..32 {
         let selector = sample_selector(rng, layout)?;
+        let all_positions = layout.positions_for_selector(&selector);
+
+        if all_positions.is_empty() {
+            continue;
+        }
+
         let filter = sample_filter(rng);
-        let positions = layout.filtered_positions(&selector, filter);
+        let positions = if filter == CellFilter::Any {
+            all_positions.clone()
+        } else {
+            layout.filtered_positions(&selector, filter)
+        };
+
+        if filter_is_redundant(filter, &all_positions, &positions) {
+            continue;
+        }
 
         if positions.is_empty() {
             continue;
@@ -517,6 +531,14 @@ fn sample_count_cells_clue<R: Rng + ?Sized>(
     }
 
     None
+}
+
+fn filter_is_redundant(
+    filter: CellFilter,
+    all_positions: &[Position],
+    filtered_positions: &[Position],
+) -> bool {
+    filter != CellFilter::Any && all_positions == filtered_positions
 }
 
 fn sample_direct_relation_clue<R: Rng + ?Sized>(
@@ -678,6 +700,17 @@ fn sample_count_from_truth<R: Rng + ?Sized>(rng: &mut R, matching: usize) -> Cou
     }
 }
 
+fn sample_witness_assignment<R: Rng + ?Sized>(
+    rng: &mut R,
+    solution: &crate::solver::SolutionSet,
+    known_mask: u32,
+) -> Option<u32> {
+    let partial = *solution.assignments.choose(rng)?;
+    let free_mask = FULL_MASK & !known_mask & !solution.variable_mask;
+
+    Some(partial | (rng.r#gen::<u32>() & free_mask))
+}
+
 fn normalize_generated_clue<R: Rng + ?Sized>(
     rng: &mut R,
     candidate: Clue,
@@ -832,12 +865,14 @@ mod tests {
 
     use crate::{
         clue::{CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Count, NONSENSE_TEXTS},
+        geometry::Position,
         solver::{ClueAnalysis, SolutionSet, solve_clues_with_known_mask},
     };
 
     use super::{
         BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, ROWS, SID_NAME, distinct_roles,
-        generate_puzzle_with_rng, generate_puzzle_with_seed, normalize_generated_clue, sample_roles,
+        filter_is_redundant, generate_puzzle_with_rng, generate_puzzle_with_seed,
+        normalize_generated_clue, sample_roles, sample_witness_assignment,
     };
 
     fn blank_analysis() -> ClueAnalysis {
@@ -1067,5 +1102,48 @@ mod tests {
             }
             other => panic!("expected nonsense clue, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn witness_sampling_preserves_known_bits_and_can_fill_free_bits() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let solution = SolutionSet {
+            analysis: blank_analysis(),
+            assignments: vec![0b0101],
+            variable_mask: 0b0001,
+        };
+
+        let witness = sample_witness_assignment(&mut rng, &solution, 0b0100).unwrap();
+
+        assert_eq!(witness & 0b0101, 0b0101);
+        assert_ne!(witness, 0b0101);
+    }
+
+    #[test]
+    fn unchanged_filters_are_treated_as_redundant() {
+        let left_column = vec![
+            Position::new(0, 0),
+            Position::new(1, 0),
+            Position::new(2, 0),
+            Position::new(3, 0),
+            Position::new(4, 0),
+        ];
+        let left_column_corners = vec![Position::new(0, 0), Position::new(4, 0)];
+
+        assert!(filter_is_redundant(
+            CellFilter::Edge,
+            &left_column,
+            &left_column,
+        ));
+        assert!(!filter_is_redundant(
+            CellFilter::Corner,
+            &left_column,
+            &left_column_corners,
+        ));
+        assert!(!filter_is_redundant(
+            CellFilter::Any,
+            &left_column,
+            &left_column,
+        ));
     }
 }
