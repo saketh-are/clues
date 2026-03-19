@@ -221,17 +221,6 @@ impl Layout {
             .filter(|index| answer_for_index(assignment, **index) == answer)
             .count()
     }
-
-    fn all_lines(&self) -> Vec<Line> {
-        let mut lines = (0..ROWS as u8).map(Line::Row).collect::<Vec<_>>();
-        lines.extend([
-            Line::Col(Column::A),
-            Line::Col(Column::B),
-            Line::Col(Column::C),
-            Line::Col(Column::D),
-        ]);
-        lines
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -759,7 +748,17 @@ fn sample_line_comparison_clue<R: Rng + ?Sized>(
     layout: &Layout,
     assignment: u32,
 ) -> Option<Clue> {
-    let lines = layout.all_lines();
+    let compare_rows = rng.gen_bool(0.5);
+    let lines = if compare_rows {
+        (0..ROWS as u8).map(Line::Row).collect::<Vec<_>>()
+    } else {
+        vec![
+            Line::Col(Column::A),
+            Line::Col(Column::B),
+            Line::Col(Column::C),
+            Line::Col(Column::D),
+        ]
+    };
     let first_line = *lines.choose(rng)?;
     let second_line = **lines
         .iter()
@@ -1300,8 +1299,8 @@ mod tests {
         combination_size_bonus, distinct_roles, empty_puzzle, exact_count_triviality,
         family_weight, filter_is_redundant, generate_puzzle_with_rng,
         generate_puzzle_with_rng_and_instrumentation, generate_puzzle_with_seed,
-        minimal_forcing_subset_size, normalize_generated_clue, sample_roles,
-        sample_witness_assignment, GenerationInstrumentation,
+        minimal_forcing_subset_size, normalize_generated_clue, sample_line_comparison_clue,
+        sample_roles, sample_witness_assignment, GenerationInstrumentation, Layout,
     };
 
     fn blank_analysis() -> ClueAnalysis {
@@ -1599,6 +1598,38 @@ mod tests {
         };
 
         assert!(family_weight(&comparison) > family_weight(&exact_row));
+    }
+
+    #[test]
+    fn generated_line_comparisons_only_compare_like_with_like() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let names = NAMES[..CELL_COUNT]
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        let roles = (0..CELL_COUNT)
+            .map(|index| format!("Role {}", index % 4))
+            .collect::<Vec<_>>();
+        let puzzle = empty_puzzle(&names, &roles);
+        let layout = Layout::from_puzzle(&puzzle, distinct_roles(&roles));
+
+        for _ in 0..128 {
+            let clue = sample_line_comparison_clue(&mut rng, &layout, 0).unwrap();
+
+            match clue {
+                Clue::LineComparison {
+                    first_line: crate::clue::Line::Row(_),
+                    second_line: crate::clue::Line::Row(_),
+                    ..
+                }
+                | Clue::LineComparison {
+                    first_line: crate::clue::Line::Col(_),
+                    second_line: crate::clue::Line::Col(_),
+                    ..
+                } => {}
+                other => panic!("expected like-with-like line comparison, got {other:?}"),
+            }
+        }
     }
 
     #[test]

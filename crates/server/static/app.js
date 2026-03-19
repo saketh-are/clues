@@ -30,6 +30,7 @@ const finishDismissButton = document.querySelector("#finish-dismiss");
 const scoreDebugEl = document.querySelector("#score-debug");
 const progressStoragePrefix = "clues-progress:v1:";
 const noteTapDelayMs = 420;
+const clueTapDelayMs = 260;
 const noteColors = new Set(["yellow", "red", "green"]);
 const invalidMoveMessage = "⚠️ Not enough evidence!";
 const roleEmojis = {
@@ -73,6 +74,7 @@ const state = {
   flashingTiles: new Set(),
   flashTimer: null,
   pendingNoteTap: null,
+  pendingClueTap: null,
   shareFeedbackTimer: null,
   timerStartedAt: null,
   timerCompletedAt: null,
@@ -430,6 +432,7 @@ async function loadPuzzle(seed, options = {}) {
       row.map((cell, colIndex) => ({ cell, rowIndex, colIndex })),
     ).find(({ cell }) => cell.revealed && cell.score_terms) ?? null;
   clearPendingNoteTap();
+  clearPendingClueTap();
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
 
@@ -516,7 +519,7 @@ function renderBoard() {
       if (cell.clue) {
         card.classList.add("clickable");
         card.addEventListener("click", () => {
-          toggleClueVisibility(rowIndex, colIndex);
+          handleClueTap(rowIndex, colIndex);
         });
       } else if (!cell.revealed) {
         card.classList.add("clickable");
@@ -1071,6 +1074,15 @@ function clearPendingNoteTap() {
   state.pendingNoteTap = null;
 }
 
+function clearPendingClueTap() {
+  if (!state.pendingClueTap) {
+    return;
+  }
+
+  window.clearTimeout(state.pendingClueTap.timerId);
+  state.pendingClueTap = null;
+}
+
 function setNote(row, col, color) {
   const key = guessKey(row, col);
 
@@ -1125,6 +1137,30 @@ function handleNoteTap(row, col) {
     }, noteTapDelayMs),
   };
   setNote(row, col, noteColorForTapCount(1));
+}
+
+function handleClueTap(row, col) {
+  const key = guessKey(row, col);
+  const clue = state.cells[row]?.[col]?.clue;
+
+  if (!clue) {
+    return;
+  }
+
+  if (state.pendingClueTap && state.pendingClueTap.key === key) {
+    clearPendingClueTap();
+    flashMentionedTiles(clue);
+    return;
+  }
+
+  clearPendingClueTap();
+  state.pendingClueTap = {
+    key,
+    timerId: window.setTimeout(() => {
+      state.pendingClueTap = null;
+      toggleClueVisibility(row, col);
+    }, clueTapDelayMs),
+  };
 }
 
 async function restoreProgress() {
@@ -1228,6 +1264,7 @@ async function setGuess(row, col, nextGuess) {
 
 async function clearBoard() {
   clearPendingNoteTap();
+  clearPendingClueTap();
   window.clearTimeout(state.flashTimer);
   clearSavedProgress();
   closeGuessModal();
@@ -1243,7 +1280,6 @@ async function clearBoard() {
 
 function toggleClueVisibility(row, col) {
   const key = guessKey(row, col);
-  const clue = state.cells[row]?.[col]?.clue;
 
   if (state.hiddenClues.has(key)) {
     state.hiddenClues.delete(key);
@@ -1251,13 +1287,15 @@ function toggleClueVisibility(row, col) {
     state.hiddenClues.add(key);
   }
 
-  if (clue) {
-    persistProgress();
-    flashMentionedTiles(clue);
-    return;
-  }
-
+  persistProgress();
   renderBoard();
+}
+
+function canSkipNewPuzzleConfirmation() {
+  return (
+    allTilesMarked() ||
+    (state.moves.length === 0 && state.hiddenClues.size === 0 && state.notes.size === 0)
+  );
 }
 
 function openGuessModal(row, col) {
@@ -1333,7 +1371,16 @@ function showGuessError(error) {
   openErrorModal(error.message);
 }
 
-newRandomButton.addEventListener("click", () => {
+newRandomButton.addEventListener("click", async () => {
+  if (canSkipNewPuzzleConfirmation()) {
+    try {
+      await loadPuzzle();
+    } catch (error) {
+      openErrorModal(error.message);
+    }
+    return;
+  }
+
   openConfirmModal("new");
 });
 

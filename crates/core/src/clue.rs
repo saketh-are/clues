@@ -214,7 +214,7 @@ impl CellSelector {
     fn text(&self, answer: Answer, count: Count, filter: CellFilter) -> String {
         match self {
             Self::Board => format!(
-                "there are {}{}",
+                "There are {}{}",
                 count.describe(&format!("{answer}s")),
                 filter.suffix(),
             ),
@@ -634,7 +634,7 @@ mod tests {
 
         assert_eq!(
             clue.text(),
-            "there are an even number of innocents in the corners"
+            "There are an even number of innocents in the corners"
         );
     }
 
