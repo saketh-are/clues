@@ -176,6 +176,131 @@ fn answer_with_article(answer: Answer) -> &'static str {
     }
 }
 
+fn singular_role(role: &str) -> String {
+    role.to_lowercase()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PersonGroup {
+    Any,
+    Filter { filter: CellFilter },
+    Line { line: Line },
+    Role { role: Role },
+}
+
+impl PersonGroup {
+    fn text(&self, singular: bool) -> String {
+        match self {
+            Self::Any => {
+                if singular {
+                    "person".to_string()
+                } else {
+                    "people".to_string()
+                }
+            }
+            Self::Filter {
+                filter: CellFilter::Any,
+            } => {
+                if singular {
+                    "person".to_string()
+                } else {
+                    "people".to_string()
+                }
+            }
+            Self::Filter {
+                filter: CellFilter::Edge,
+            } => {
+                if singular {
+                    "person on the edges".to_string()
+                } else {
+                    "people on the edges".to_string()
+                }
+            }
+            Self::Filter {
+                filter: CellFilter::Corner,
+            } => {
+                if singular {
+                    "person in the corners".to_string()
+                } else {
+                    "people in the corners".to_string()
+                }
+            }
+            Self::Line { line } => {
+                if singular {
+                    format!("person in {line}")
+                } else {
+                    format!("people in {line}")
+                }
+            }
+            Self::Role { role } => {
+                if singular {
+                    singular_role(role)
+                } else {
+                    pluralize_role(role)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum PersonPredicate {
+    Neighbor {
+        answer: Answer,
+        count: Count,
+        filter: CellFilter,
+    },
+    DirectRelation {
+        answer: Answer,
+        direction: Direction,
+    },
+}
+
+impl PersonPredicate {
+    fn text(&self, singular: bool) -> String {
+        match self {
+            Self::Neighbor {
+                answer,
+                count,
+                filter,
+            } => format!(
+                "{} {} neighbors{}",
+                if singular { "has" } else { "have" },
+                count.describe(&answer.to_string()),
+                filter.suffix(),
+            ),
+            Self::DirectRelation { answer, direction } => format!(
+                "{} directly {direction} {}",
+                if singular { "is" } else { "are" },
+                answer_with_article(*answer),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+pub enum Quantifier {
+    Exactly(i32),
+}
+
+impl Quantifier {
+    fn text(self) -> String {
+        match self {
+            Self::Exactly(count) => format!("Exactly {count}"),
+        }
+    }
+
+    fn is_singular(self) -> bool {
+        match self {
+            Self::Exactly(1) => true,
+            Self::Exactly(_) => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Clue {
@@ -236,6 +361,11 @@ pub enum Clue {
         second_role: Role,
         answer: Answer,
         comparison: Comparison,
+    },
+    Quantified {
+        quantifier: Quantifier,
+        group: PersonGroup,
+        predicate: PersonPredicate,
     },
 }
 
@@ -328,6 +458,16 @@ impl Clue {
                 &answer_roles(*answer, first_role),
                 &answer_roles(*answer, second_role),
             ),
+            Self::Quantified {
+                quantifier,
+                group,
+                predicate,
+            } => format!(
+                "{} {} {}",
+                quantifier.text(),
+                group.text(quantifier.is_singular()),
+                predicate.text(quantifier.is_singular()),
+            ),
         }
     }
 
@@ -341,7 +481,8 @@ impl Clue {
             | Self::Between { .. }
             | Self::DirectRelation { .. }
             | Self::RoleCount { .. }
-            | Self::RolesComparison { .. } => &[],
+            | Self::RolesComparison { .. }
+            | Self::Quantified { .. } => &[],
         }
     }
 
@@ -357,14 +498,18 @@ impl Clue {
             | Self::Between { .. }
             | Self::SharedNeighbor { .. }
             | Self::RoleCount { .. }
-            | Self::RolesComparison { .. } => None,
+            | Self::RolesComparison { .. }
+            | Self::Quantified { .. } => None,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{CellFilter, Clue, Column, Comparison, Count, Direction, Line, Parity};
+    use super::{
+        CellFilter, Clue, Column, Comparison, Count, Direction, Line, Parity, PersonGroup,
+        PersonPredicate, Quantifier,
+    };
     use crate::{
         geometry::Offset,
         types::Answer,
@@ -586,6 +731,85 @@ mod tests {
         assert_eq!(
             clue.text(),
             "there are as many criminal coaches as there are criminal coders",
+        );
+    }
+
+    #[test]
+    fn exactly_one_corner_person_renders_puzzle_text() {
+        let clue = Clue::Quantified {
+            quantifier: Quantifier::Exactly(1),
+            group: PersonGroup::Filter {
+                filter: CellFilter::Corner,
+            },
+            predicate: PersonPredicate::Neighbor {
+                answer: Answer::Innocent,
+                count: Count::Number(2),
+                filter: CellFilter::Any,
+            },
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Exactly 1 person in the corners has 2 innocent neighbors",
+        );
+    }
+
+    #[test]
+    fn exactly_one_role_renders_direct_relation_puzzle_text() {
+        let clue = Clue::Quantified {
+            quantifier: Quantifier::Exactly(1),
+            group: PersonGroup::Role {
+                role: "Sleuth".to_string(),
+            },
+            predicate: PersonPredicate::DirectRelation {
+                answer: Answer::Innocent,
+                direction: Direction::Left,
+            },
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Exactly 1 sleuth is directly left of an innocent",
+        );
+    }
+
+    #[test]
+    fn exactly_one_row_person_renders_puzzle_text() {
+        let clue = Clue::Quantified {
+            quantifier: Quantifier::Exactly(1),
+            group: PersonGroup::Line {
+                line: Line::Row(2),
+            },
+            predicate: PersonPredicate::Neighbor {
+                answer: Answer::Innocent,
+                count: Count::Number(4),
+                filter: CellFilter::Any,
+            },
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Exactly 1 person in row 2 has 4 innocent neighbors",
+        );
+    }
+
+    #[test]
+    fn exactly_two_corner_people_render_puzzle_text() {
+        let clue = Clue::Quantified {
+            quantifier: Quantifier::Exactly(2),
+            group: PersonGroup::Filter {
+                filter: CellFilter::Corner,
+            },
+            predicate: PersonPredicate::Neighbor {
+                answer: Answer::Innocent,
+                count: Count::Number(2),
+                filter: CellFilter::Any,
+            },
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Exactly 2 people in the corners have 2 innocent neighbors",
         );
     }
 
