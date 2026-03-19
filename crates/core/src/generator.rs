@@ -674,7 +674,10 @@ fn sample_named_count_cells_clue<R: Rng + ?Sized>(
             layout.filtered_positions(&selector, filter)
         };
 
-        if filter_is_redundant(filter, &all_positions, &positions) || positions.is_empty() {
+        if filter_is_redundant(filter, &all_positions, &positions)
+            || positions.is_empty()
+            || count_scope_is_too_small(&positions)
+        {
             continue;
         }
 
@@ -726,7 +729,9 @@ fn sample_count_cells_clue<R: Rng + ?Sized>(
             layout.filtered_positions(&selector, filter)
         };
 
-        if filter_is_redundant(filter, &all_positions, &positions) {
+        if filter_is_redundant(filter, &all_positions, &positions)
+            || count_scope_is_too_small(&positions)
+        {
             continue;
         }
 
@@ -755,6 +760,10 @@ fn filter_is_redundant(
     filtered_positions: &[Position],
 ) -> bool {
     filter != CellFilter::Any && all_positions == filtered_positions
+}
+
+fn count_scope_is_too_small(positions: &[Position]) -> bool {
+    positions.len() <= 1
 }
 
 fn sample_direct_relation_clue<R: Rng + ?Sized>(
@@ -1464,8 +1473,8 @@ mod tests {
     use super::{
         BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, GenerationInstrumentation,
         Layout, ROWS, SID_NAME, active_state_bonus, active_uncertainty, active_unforced_tile_count,
-        combination_size_bonus, distinct_roles, empty_puzzle, exact_count_triviality,
-        family_weight, filter_is_redundant, generate_puzzle_with_rng,
+        combination_size_bonus, count_scope_is_too_small, distinct_roles, empty_puzzle,
+        exact_count_triviality, family_weight, filter_is_redundant, generate_puzzle_with_rng,
         generate_puzzle_with_rng_and_instrumentation, generate_puzzle_with_seed,
         minimal_forcing_subset_size, normalize_generated_clue, sample_line_comparison_clue,
         sample_filter_for_selector, sample_roles, sample_witness_assignment,
@@ -1759,6 +1768,12 @@ mod tests {
         for _ in 0..32 {
             assert_eq!(sample_filter_for_selector(&mut rng, &selector), CellFilter::Any);
         }
+    }
+
+    #[test]
+    fn singleton_count_scopes_are_too_small() {
+        assert!(count_scope_is_too_small(&[Position::new(3, 3)]));
+        assert!(!count_scope_is_too_small(&[Position::new(3, 2), Position::new(3, 3)]));
     }
 
     #[test]
