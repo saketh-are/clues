@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
 
 use crate::{
-    clue::{CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, Parity},
+    clue::{
+        CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Column, Comparison, Count,
+        Direction, Line, NONSENSE_TEXTS, Parity,
+    },
     geometry::{BoardShape, Position},
     puzzle::{Cell, Puzzle, Visibility},
     solver::{ForcedAnswer, SolveError, solve_clues_with_known_mask},
@@ -243,6 +246,7 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     );
 
     while let Some(current_index) = pending.pop() {
+        let current_answer = answers[current_index].unwrap();
         let current_clues = collect_clues(&clues);
         let baseline =
             solve_clues_with_known_mask(&puzzle, &current_clues, known_mask, known_innocent_mask)?;
@@ -273,9 +277,15 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 continue;
             }
 
-            let newly_forced =
-                newly_forced_unknown_indices(&baseline.analysis, &solved.analysis, known_mask);
-            let forced_unknown = forced_unknown_indices(&solved.analysis, known_mask);
+            let (candidate, analysis, newly_forced, forced_unknown) =
+                normalize_generated_clue(
+                    rng,
+                    candidate,
+                    current_answer,
+                    &baseline,
+                    &solved,
+                    known_mask,
+                );
 
             if require_new_force && newly_forced.is_empty() {
                 continue;
@@ -285,7 +295,7 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 continue;
             }
 
-            accepted = Some((candidate, solved.analysis, newly_forced, forced_unknown));
+            accepted = Some((candidate, analysis, newly_forced, forced_unknown));
             break;
         }
 
@@ -423,7 +433,7 @@ fn empty_puzzle(names: &[Name], roles: &[Role]) -> Puzzle {
                     Cell {
                         name: names[index].clone(),
                         role,
-                        clue: Clue::Nonsense,
+                        clue: default_nonsense_clue(),
                         answer: Answer::Innocent,
                         state: Visibility::Hidden,
                     }
@@ -668,6 +678,56 @@ fn sample_count_from_truth<R: Rng + ?Sized>(rng: &mut R, matching: usize) -> Cou
     }
 }
 
+fn normalize_generated_clue<R: Rng + ?Sized>(
+    rng: &mut R,
+    candidate: Clue,
+    answer: Answer,
+    baseline: &crate::solver::SolutionSet,
+    solved: &crate::solver::SolutionSet,
+    known_mask: u32,
+) -> (Clue, crate::solver::ClueAnalysis, Vec<usize>, Vec<usize>) {
+    if remaining_possibility_count(solved, known_mask) < remaining_possibility_count(baseline, known_mask) {
+        let newly_forced =
+            newly_forced_unknown_indices(&baseline.analysis, &solved.analysis, known_mask);
+        let forced_unknown = forced_unknown_indices(&solved.analysis, known_mask);
+
+        (candidate, solved.analysis.clone(), newly_forced, forced_unknown)
+    } else {
+        let forced_unknown = forced_unknown_indices(&baseline.analysis, known_mask);
+
+        (
+            random_nonsense_clue(rng, answer),
+            baseline.analysis.clone(),
+            Vec::new(),
+            forced_unknown,
+        )
+    }
+}
+
+fn default_nonsense_clue() -> Clue {
+    Clue::Nonsense {
+        text: NONSENSE_TEXTS[0].to_string(),
+    }
+}
+
+fn random_nonsense_clue<R: Rng + ?Sized>(rng: &mut R, answer: Answer) -> Clue {
+    let pool = match answer {
+        Answer::Innocent => &NONSENSE_TEXTS[..],
+        Answer::Criminal => &CRIMINAL_NONSENSE_TEXTS[..],
+    };
+
+    Clue::Nonsense {
+        text: pool.choose(rng).unwrap().to_string(),
+    }
+}
+
+fn remaining_possibility_count(solution: &crate::solver::SolutionSet, known_mask: u32) -> u64 {
+    let free_unknown_bits =
+        CELL_COUNT as u32 - known_mask.count_ones() - solution.variable_mask.count_ones();
+
+    (solution.assignments.len() as u64) * (1u64 << free_unknown_bits)
+}
+
 fn newly_forced_unknown_indices(
     baseline: &crate::solver::ClueAnalysis,
     next: &crate::solver::ClueAnalysis,
@@ -770,12 +830,22 @@ fn random_distinct_names<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Option
 mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
-    use crate::solver::solve_clues_with_known_mask;
+    use crate::{
+        clue::{CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Count, NONSENSE_TEXTS},
+        solver::{ClueAnalysis, SolutionSet, solve_clues_with_known_mask},
+    };
 
     use super::{
         BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, ROWS, SID_NAME, distinct_roles,
-        generate_puzzle_with_rng, generate_puzzle_with_seed, sample_roles,
+        generate_puzzle_with_rng, generate_puzzle_with_seed, normalize_generated_clue, sample_roles,
     };
+
+    fn blank_analysis() -> ClueAnalysis {
+        ClueAnalysis {
+            has_solution: true,
+            forced_answers: vec![vec![ForcedAnswer::Neither; COLS]; ROWS],
+        }
+    }
 
     #[test]
     fn generated_puzzle_is_fully_forced_from_the_first_reveal() {
@@ -881,5 +951,121 @@ mod tests {
         let second = generate_puzzle_with_seed(7).unwrap();
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn non_narrowing_generated_clues_become_nonsense() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let candidate = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: crate::types::Answer::Innocent,
+            count: Count::AtLeast(0),
+            filter: CellFilter::Any,
+        };
+        let baseline = SolutionSet {
+            analysis: blank_analysis(),
+            assignments: vec![1, 2, 3],
+            variable_mask: 0,
+        };
+        let solved = SolutionSet {
+            analysis: blank_analysis(),
+            assignments: vec![1, 2, 3],
+            variable_mask: 0,
+        };
+
+        let (effective, _, newly_forced, forced_unknown) =
+            normalize_generated_clue(
+                &mut rng,
+                candidate,
+                crate::types::Answer::Innocent,
+                &baseline,
+                &solved,
+                0,
+            );
+
+        match effective {
+            Clue::Nonsense { text } => assert!(NONSENSE_TEXTS.contains(&text.as_str())),
+            other => panic!("expected nonsense clue, got {other:?}"),
+        }
+        assert!(newly_forced.is_empty());
+        assert!(forced_unknown.is_empty());
+    }
+
+    #[test]
+    fn narrowing_generated_clues_are_kept() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let candidate = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: crate::types::Answer::Innocent,
+            count: Count::Number(20),
+            filter: CellFilter::Any,
+        };
+        let solved_analysis = ClueAnalysis {
+            has_solution: true,
+            forced_answers: vec![vec![ForcedAnswer::Innocent; COLS]; ROWS],
+        };
+        let baseline = SolutionSet {
+            analysis: blank_analysis(),
+            assignments: vec![0],
+            variable_mask: 0,
+        };
+        let solved = SolutionSet {
+            analysis: solved_analysis.clone(),
+            assignments: vec![1],
+            variable_mask: 1,
+        };
+
+        let (effective, analysis, newly_forced, forced_unknown) =
+            normalize_generated_clue(
+                &mut rng,
+                candidate.clone(),
+                crate::types::Answer::Innocent,
+                &baseline,
+                &solved,
+                0,
+            );
+
+        assert_eq!(effective, candidate);
+        assert_eq!(analysis, solved_analysis);
+        assert_eq!(newly_forced.len(), CELL_COUNT);
+        assert_eq!(forced_unknown.len(), CELL_COUNT);
+    }
+
+    #[test]
+    fn criminal_nonsense_clues_use_the_criminal_only_pool() {
+        let mut rng = StdRng::seed_from_u64(7);
+        let candidate = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: crate::types::Answer::Innocent,
+            count: Count::AtLeast(0),
+            filter: CellFilter::Any,
+        };
+        let baseline = SolutionSet {
+            analysis: blank_analysis(),
+            assignments: vec![1, 2, 3],
+            variable_mask: 0,
+        };
+        let solved = SolutionSet {
+            analysis: blank_analysis(),
+            assignments: vec![1, 2, 3],
+            variable_mask: 0,
+        };
+
+        let (effective, _, _, _) = normalize_generated_clue(
+            &mut rng,
+            candidate,
+            crate::types::Answer::Criminal,
+            &baseline,
+            &solved,
+            0,
+        );
+
+        match effective {
+            Clue::Nonsense { text } => {
+                assert!(CRIMINAL_NONSENSE_TEXTS.contains(&text.as_str()));
+                assert!(!NONSENSE_TEXTS.contains(&text.as_str()));
+            }
+            other => panic!("expected nonsense clue, got {other:?}"),
+        }
     }
 }

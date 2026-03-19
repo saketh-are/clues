@@ -46,6 +46,7 @@ struct CellResponse {
     name: String,
     role: String,
     clue: Option<String>,
+    is_nonsense: bool,
     revealed_answer: Option<Answer>,
     revealed: bool,
 }
@@ -53,6 +54,7 @@ struct CellResponse {
 #[derive(Debug, Serialize)]
 struct GuessResponse {
     clue: String,
+    is_nonsense: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +182,7 @@ async fn guess_cell(
 
     Ok(Json(GuessResponse {
         clue: puzzle.cells[row][col].clue.text(),
+        is_nonsense: matches!(puzzle.cells[row][col].clue, clues_core::Clue::Nonsense { .. }),
     }))
 }
 
@@ -198,6 +201,8 @@ impl PuzzleResponse {
                         } else {
                             None
                         },
+                        is_nonsense: cell.state == Visibility::Revealed
+                            && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
                         revealed_answer: if cell.state == Visibility::Revealed {
                             Some(cell.answer)
                         } else {

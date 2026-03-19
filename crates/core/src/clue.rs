@@ -7,6 +7,68 @@ use crate::{
     types::{Answer, Name, Role},
 };
 
+#[rustfmt::skip]
+pub const NONSENSE_TEXTS: [&str; 28] = [
+    "I taught my goldfish to play chess.",
+    "My socks filed a formal complaint today.",
+    "I scheduled a meeting with my shadow.",
+    "My umbrella only works on sunny days.",
+    "I ironed my cereal this morning by accident.",
+    "The curtains gossip whenever I leave the room.",
+    "The clock asked for a day off this morning.",
+    "I charged my houseplant but it still won't start.",
+    "I updated my toaster and now it speaks French.",
+    "My WiFi works better when I compliment it.",
+    "My GPS keeps suggesting I move permanently.",
+    "My voicemail started answering back with follow-up questions.",
+    "My phone ran out of battery so I bought a new one.",
+    "I left my car on read and now it won't start.",
+    "My fitness tracker is disappointed but not surprised.",
+    "My autocorrect has started winning the arguments.",
+    "I put my to-do list on my to-do list.",
+    "I asked Siri for directions and she sighed first.",
+    "The roomba mapped my apartment and found it lacking.",
+    "My spam folder has better conversations than I do.",
+    "My laptop fan kicks in whenever I open my budget.",
+    "The ATM laughed before showing me my balance.",
+    "The loading bar finished but I wasn't ready yet.",
+    "My smart speaker pretends not to hear me sometimes.",
+    "I deleted the app but the app did not delete me.",
+    "The captcha asked if I was a robot and I hesitated.",
+    "My phone died mid-excuse and honestly it was convincing.",
+    "My phone autocorrected my name and I considered keeping it.",
+];
+
+#[rustfmt::skip]
+pub const CRIMINAL_NONSENSE_TEXTS: [&str; 26] = [
+    "I stole the spotlight and I'm not giving it back.",
+    "I plead the fifth but my face pled guilty.",
+    "My getaway car is double parked right now.",
+    "My lawyer said to stop helping the prosecution.",
+    "I returned to the scene because I forgot my keys.",
+    "The heist went perfectly except for everything after it.",
+    "I robbed a bank and they offered me a credit card.",
+    "My mugshot is my best photo and that says a lot.",
+    "I laundered my money with my actual laundry accidentally.",
+    "The witness described me as suspiciously average looking.",
+    "I wrote my ransom note in comic sans by mistake.",
+    "My ankle monitor gets better reception than my phone does.",
+    "I stole a calendar and got twelve months for it.",
+    "My criminal record has better continuity than my resume.",
+    "The detective and I are on a first name basis.",
+    "My accomplice left a Yelp review of the heist.",
+    "The security camera caught my good side for once.",
+    "I asked for a lawyer and they sent my ex.",
+    "The interrogation lasted longer than my last relationship did.",
+    "I confessed because the silence was getting awkward honestly.",
+    "I got caught because I stopped to pet the dog.",
+    "The police sketch artist really captured my essence though.",
+    "I turned myself in because the line was shorter.",
+    "The evidence locker has more of my stuff than I do.",
+    "I robbed the wrong place and still got employee of the month.",
+    "The undercover cop was the most interesting person at my party.",
+];
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
@@ -403,7 +465,7 @@ impl Quantifier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Clue {
-    Nonsense,
+    Nonsense { text: String },
     CountCells {
         selector: CellSelector,
         answer: Answer,
@@ -446,7 +508,7 @@ pub enum Clue {
 impl Clue {
     pub fn text(&self) -> String {
         match self {
-            Self::Nonsense => "I glued my hat to my head.".to_string(),
+            Self::Nonsense { text } => text.clone(),
             Self::CountCells {
                 selector,
                 answer,
@@ -503,7 +565,7 @@ impl Clue {
 
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
-            Self::Nonsense => &[],
+            Self::Nonsense { .. } => &[],
             Self::CountCells { selector, .. } => selector.neighbor_offsets(),
             Self::Connected { .. }
             | Self::DirectRelation { .. }
@@ -516,7 +578,7 @@ impl Clue {
 
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
-            Self::Nonsense => None,
+            Self::Nonsense { .. } => None,
             Self::CountCells { selector, .. } => selector.direction_offset(),
             Self::DirectRelation { direction, .. } => Some(direction.offset()),
             Self::Connected { .. }
@@ -531,8 +593,8 @@ impl Clue {
 #[cfg(test)]
 mod tests {
     use super::{
-        CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, Parity,
-        PersonGroup, PersonPredicate, Quantifier,
+        CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line,
+        NONSENSE_TEXTS, Parity, PersonGroup, PersonPredicate, Quantifier,
     };
     use crate::{geometry::Offset, types::Answer};
 
@@ -552,9 +614,11 @@ mod tests {
 
     #[test]
     fn nonsense_renders_puzzle_text() {
-        let clue = Clue::Nonsense;
+        let clue = Clue::Nonsense {
+            text: NONSENSE_TEXTS[0].to_string(),
+        };
 
-        assert_eq!(clue.text(), "I glued my hat to my head.");
+        assert_eq!(clue.text(), NONSENSE_TEXTS[0]);
     }
 
     #[test]

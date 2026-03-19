@@ -487,10 +487,12 @@ function renderBoard() {
         clueEl.textContent = cell.clue;
         clueEl.classList.remove("placeholder");
         clueEl.classList.toggle("clue-hidden", clueHidden);
+        clueEl.classList.toggle("is-nonsense", cell.is_nonsense === true);
       } else {
         clueEl.textContent = "";
         clueEl.classList.add("placeholder");
         clueEl.classList.remove("clue-hidden");
+        clueEl.classList.remove("is-nonsense");
       }
 
       if (cell.clue) {
@@ -530,12 +532,13 @@ async function fetchValidatedClue(row, col, guess) {
   }
 
   const result = await response.json();
-  return result.clue;
+  return result;
 }
 
-function applyAcceptedGuess(row, col, guess, clue) {
+function applyAcceptedGuess(row, col, guess, clueResult) {
   state.guesses[row][col] = guess;
-  state.cells[row][col].clue = clue;
+  state.cells[row][col].clue = clueResult.clue;
+  state.cells[row][col].is_nonsense = clueResult.is_nonsense === true;
   state.hiddenClues.delete(guessKey(row, col));
   state.moves = state.moves.filter((move) => move.row !== row || move.col !== col);
   state.moves.push({ row, col, guess });
@@ -629,8 +632,8 @@ async function restoreProgress() {
         continue;
       }
 
-      const clue = await fetchValidatedClue(move.row, move.col, move.guess);
-      applyAcceptedGuess(move.row, move.col, move.guess, clue);
+      const clueResult = await fetchValidatedClue(move.row, move.col, move.guess);
+      applyAcceptedGuess(move.row, move.col, move.guess, clueResult);
     }
 
     state.hiddenClues = new Set(
@@ -694,8 +697,8 @@ async function setGuess(row, col, nextGuess) {
   renderBoard();
 
   try {
-    const clue = await fetchValidatedClue(row, col, nextGuess);
-    applyAcceptedGuess(row, col, nextGuess, clue);
+    const clueResult = await fetchValidatedClue(row, col, nextGuess);
+    applyAcceptedGuess(row, col, nextGuess, clueResult);
     persistProgress();
     closeGuessModal();
     completePuzzleIfNeeded();

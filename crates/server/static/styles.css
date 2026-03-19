@@ -304,6 +304,10 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.cell-clue.is-nonsense {
+  font-style: italic;
+}
+
 .cell.hidden-clue .cell-header {
   flex: 1;
 }

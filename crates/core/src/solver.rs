@@ -30,6 +30,7 @@ pub struct ClueAnalysis {
 pub(crate) struct SolutionSet {
     pub analysis: ClueAnalysis,
     pub assignments: Vec<u32>,
+    pub variable_mask: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -166,6 +167,7 @@ pub(crate) fn solve_clues_with_known_mask(
             variable_mask,
         ),
         assignments,
+        variable_mask,
     })
 }
 
@@ -334,7 +336,7 @@ impl CompileContext {
 
     fn compile_clue(&self, clue: &Clue) -> Result<CompiledClue, SolveError> {
         match clue {
-            Clue::Nonsense => Ok(CompiledClue::Nonsense),
+            Clue::Nonsense { .. } => Ok(CompiledClue::Nonsense),
             Clue::CountCells {
                 selector,
                 answer,
@@ -1066,7 +1068,9 @@ mod tests {
     #[test]
     fn nonsense_clue_adds_no_constraints() {
         let puzzle = test_puzzle();
-        let clues = [Clue::Nonsense];
+        let clues = [Clue::Nonsense {
+            text: "noise".to_string(),
+        }];
 
         let analysis = analyze_clues(&puzzle, &clues).unwrap();
 
@@ -1164,7 +1168,9 @@ mod tests {
     fn revealed_cells_are_not_reenumerated_when_nothing_else_is_implicated() {
         let mut puzzle = test_puzzle();
         puzzle.cells[0][0].state = Visibility::Revealed;
-        let clues = [Clue::Nonsense];
+        let clues = [Clue::Nonsense {
+            text: "noise".to_string(),
+        }];
         let (known_mask, known_innocent_mask) = known_masks_from_revealed_cells(&puzzle).unwrap();
 
         let solved =
