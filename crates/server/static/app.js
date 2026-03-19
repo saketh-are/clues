@@ -82,7 +82,7 @@ const state = {
   pendingConfirmAction: null,
   scoreDebugVisible: false,
   hoveredScoreMetric: null,
-  scoreDebugTab: "revealed",
+  scoreDebugTab: "generated",
   generatedScoreSeries: [],
   generatedClueTexts: [],
   initialRevealed: null,
@@ -426,7 +426,7 @@ async function loadPuzzle(seed, options = {}) {
   state.timerStartedAt = null;
   state.timerCompletedAt = null;
   state.completionAcknowledged = false;
-  state.scoreDebugTab = "revealed";
+  state.scoreDebugTab = "generated";
   state.initialRevealed =
     puzzle.cells.flatMap((row, rowIndex) =>
       row.map((cell, colIndex) => ({ cell, rowIndex, colIndex })),
@@ -984,6 +984,9 @@ function renderScoreDebugPanel() {
   const headerEl = document.createElement("div");
   headerEl.className = "score-debug-top";
 
+  const headingEl = document.createElement("div");
+  headingEl.className = "score-debug-heading";
+
   const titleEl = document.createElement("h2");
   titleEl.className = "score-debug-title";
   titleEl.textContent = "Clue Score";
@@ -995,7 +998,23 @@ function renderScoreDebugPanel() {
       ? `${activeSeries.length} generated`
       : `${activeSeries.length} revealed`;
 
-  headerEl.append(titleEl, metaEl);
+  headingEl.append(titleEl, metaEl);
+
+  const quickNewButton = document.createElement("button");
+  quickNewButton.type = "button";
+  quickNewButton.className = "button button-secondary score-debug-action";
+  quickNewButton.textContent = "New Puzzle";
+  quickNewButton.addEventListener("click", async () => {
+    try {
+      state.scoreDebugVisible = true;
+      state.scoreDebugTab = "generated";
+      await loadPuzzle();
+    } catch (error) {
+      openErrorModal(error.message);
+    }
+  });
+
+  headerEl.append(headingEl, quickNewButton);
   cardEl.appendChild(headerEl);
 
   const tabsEl = document.createElement("div");

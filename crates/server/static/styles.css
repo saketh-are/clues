@@ -102,9 +102,19 @@ body {
 
 .score-debug-top {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
+}
+
+.score-debug-heading {
+  display: grid;
+  gap: 0.18rem;
+}
+
+.score-debug-action {
+  align-self: start;
+  white-space: nowrap;
 }
 
 .score-debug-tabs {
@@ -744,6 +754,10 @@ h1 {
 
   .score-debug-title {
     font-size: 0.9rem;
+  }
+
+  .score-debug-action {
+    font-size: 0.68rem;
   }
 
   .score-debug-tab {
