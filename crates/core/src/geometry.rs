@@ -37,6 +37,13 @@ impl BoardShape {
             .collect()
     }
 
+    pub fn is_edge(self, position: Position) -> bool {
+        position.row == 0
+            || position.col == 0
+            || position.row == self.rows as i16 - 1
+            || position.col == self.cols as i16 - 1
+    }
+
     pub fn tiles_in_direction(self, origin: Position, offset: Offset) -> Vec<Position> {
         let mut tiles = Vec::new();
         let mut current = origin.shifted(offset);
@@ -47,6 +54,18 @@ impl BoardShape {
         }
 
         tiles
+    }
+
+    pub fn row_positions(self, row: u8) -> Vec<Position> {
+        (0..self.cols)
+            .map(|col| Position::new(row as i16, col as i16))
+            .collect()
+    }
+
+    pub fn col_positions(self, col: u8) -> Vec<Position> {
+        (0..self.rows)
+            .map(|row| Position::new(row as i16, col as i16))
+            .collect()
     }
 }
 
@@ -150,5 +169,48 @@ mod tests {
         assert!(board
             .tiles_in_direction(top_left, Offset::new(0, -1))
             .is_empty());
+    }
+
+    #[test]
+    fn row_two_has_four_tiles() {
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(board.row_positions(2).len(), 4);
+    }
+
+    #[test]
+    fn col_one_has_five_tiles() {
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(board.col_positions(1).len(), 5);
+    }
+
+    #[test]
+    fn row_two_has_two_tiles_on_the_edges() {
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(
+            board
+                .row_positions(2)
+                .into_iter()
+                .filter(|position| board.is_edge(*position))
+                .count(),
+            2,
+        );
+    }
+
+    #[test]
+    fn center_cell_has_three_edge_neighbors() {
+        let board = BoardShape::new(5, 4);
+        let center = Position::new(2, 1);
+
+        assert_eq!(
+            board
+                .touching_neighbors(center)
+                .into_iter()
+                .filter(|position| board.is_edge(*position))
+                .count(),
+            3,
+        );
     }
 }

@@ -50,6 +50,22 @@ pub enum Parity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CellFilter {
+    Any,
+    Edge,
+}
+
+impl CellFilter {
+    pub const fn suffix(self) -> &'static str {
+        match self {
+            Self::Any => "",
+            Self::Edge => " on the edges",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Count {
     Number(i32),
@@ -73,12 +89,26 @@ pub enum Clue {
         name: Name,
         answer: Answer,
         count: Count,
+        filter: CellFilter,
     },
     Direction {
         name: Name,
         answer: Answer,
         direction: Direction,
         count: Count,
+        filter: CellFilter,
+    },
+    Row {
+        row: u8,
+        answer: Answer,
+        count: Count,
+        filter: CellFilter,
+    },
+    Col {
+        col: u8,
+        answer: Answer,
+        count: Count,
+        filter: CellFilter,
     },
 }
 
@@ -89,26 +119,56 @@ impl Clue {
                 name,
                 answer,
                 count,
-            } => format!("{name} has {} neighbors", count.describe(&answer.to_string())),
+                filter,
+            } => format!(
+                "{name} has {} neighbors{}",
+                count.describe(&answer.to_string()),
+                filter.suffix(),
+            ),
             Self::Direction {
                 name,
                 answer,
                 direction,
                 count,
-            } => format!("there are {} {direction} {name}", count.describe(&format!("{answer}s"))),
+                filter,
+            } => format!(
+                "there are {} {direction} {name}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
+            Self::Row {
+                row,
+                answer,
+                count,
+                filter,
+            } => format!(
+                "Row {row} has {}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
+            Self::Col {
+                col,
+                answer,
+                count,
+                filter,
+            } => format!(
+                "Col {col} has {}{}",
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
         }
     }
 
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
             Self::Neighbor { .. } => &TOUCHING_NEIGHBOR_OFFSETS,
-            Self::Direction { .. } => &[],
+            Self::Direction { .. } | Self::Row { .. } | Self::Col { .. } => &[],
         }
     }
 
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
-            Self::Neighbor { .. } => None,
+            Self::Neighbor { .. } | Self::Row { .. } | Self::Col { .. } => None,
             Self::Direction { direction, .. } => Some(direction.offset()),
         }
     }
@@ -116,7 +176,7 @@ impl Clue {
 
 #[cfg(test)]
 mod tests {
-    use super::{Clue, Count, Direction, Parity};
+    use super::{CellFilter, Clue, Count, Direction, Parity};
     use crate::{
         geometry::Offset,
         types::Answer,
@@ -128,20 +188,25 @@ mod tests {
             name: "Ada".to_string(),
             answer: Answer::Innocent,
             count: Count::Number(3),
+            filter: CellFilter::Any,
         };
 
         assert_eq!(clue.text(), "Ada has 3 innocent neighbors");
     }
 
     #[test]
-    fn neighbor_renders_parity_puzzle_text() {
+    fn neighbor_renders_edge_filtered_parity_puzzle_text() {
         let clue = Clue::Neighbor {
             name: "Ada".to_string(),
             answer: Answer::Innocent,
             count: Count::Parity(Parity::Odd),
+            filter: CellFilter::Edge,
         };
 
-        assert_eq!(clue.text(), "Ada has an odd number of innocent neighbors");
+        assert_eq!(
+            clue.text(),
+            "Ada has an odd number of innocent neighbors on the edges",
+        );
     }
 
     #[test]
@@ -151,6 +216,7 @@ mod tests {
             answer: Answer::Innocent,
             direction: Direction::Below,
             count: Count::Number(2),
+            filter: CellFilter::Any,
         };
 
         assert_eq!(clue.text(), "there are 2 innocents below Ada");
@@ -163,9 +229,34 @@ mod tests {
             answer: Answer::Innocent,
             direction: Direction::Below,
             count: Count::Parity(Parity::Even),
+            filter: CellFilter::Any,
         };
 
         assert_eq!(clue.text(), "there are an even number of innocents below Ada");
+    }
+
+    #[test]
+    fn row_renders_edge_filtered_number_puzzle_text() {
+        let clue = Clue::Row {
+            row: 2,
+            answer: Answer::Innocent,
+            count: Count::Number(2),
+            filter: CellFilter::Edge,
+        };
+
+        assert_eq!(clue.text(), "Row 2 has 2 innocents on the edges");
+    }
+
+    #[test]
+    fn col_renders_parity_puzzle_text() {
+        let clue = Clue::Col {
+            col: 3,
+            answer: Answer::Criminal,
+            count: Count::Parity(Parity::Even),
+            filter: CellFilter::Any,
+        };
+
+        assert_eq!(clue.text(), "Col 3 has an even number of criminals");
     }
 
     #[test]
