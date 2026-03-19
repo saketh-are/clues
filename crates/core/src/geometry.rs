@@ -37,6 +37,19 @@ impl BoardShape {
             .collect()
     }
 
+    pub fn orthogonal_neighbors(self, origin: Position) -> Vec<Position> {
+        [
+            Offset::new(-1, 0),
+            Offset::new(0, -1),
+            Offset::new(0, 1),
+            Offset::new(1, 0),
+        ]
+        .into_iter()
+        .map(|offset| origin.shifted(offset))
+        .filter(|position| self.contains(*position))
+        .collect()
+    }
+
     pub fn is_edge(self, position: Position) -> bool {
         position.row == 0
             || position.col == 0
@@ -72,6 +85,35 @@ impl BoardShape {
     pub fn col_positions(self, col: u8) -> Vec<Position> {
         (0..self.rows)
             .map(|row| Position::new(row as i16, col as i16))
+            .collect()
+    }
+
+    pub fn positions_between(self, first: Position, second: Position) -> Vec<Position> {
+        debug_assert!(first.row == second.row || first.col == second.col);
+
+        if first.row == second.row {
+            let start = first.col.min(second.col) + 1;
+            let end = first.col.max(second.col);
+
+            (start..end)
+                .map(|col| Position::new(first.row, col))
+                .collect()
+        } else {
+            let start = first.row.min(second.row) + 1;
+            let end = first.row.max(second.row);
+
+            (start..end)
+                .map(|row| Position::new(row, first.col))
+                .collect()
+        }
+    }
+
+    pub fn common_neighbors(self, first: Position, second: Position) -> Vec<Position> {
+        let second_neighbors = self.touching_neighbors(second);
+
+        self.touching_neighbors(first)
+            .into_iter()
+            .filter(|position| second_neighbors.contains(position))
             .collect()
     }
 }
@@ -120,11 +162,27 @@ mod tests {
     }
 
     #[test]
+    fn center_cell_has_four_orthogonal_neighbors() {
+        let center = Position::new(2, 1);
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(board.orthogonal_neighbors(center).len(), 4);
+    }
+
+    #[test]
     fn corner_cell_has_three_touching_neighbors() {
         let top_left = Position::new(0, 0);
         let board = BoardShape::new(5, 4);
 
         assert_eq!(board.touching_neighbors(top_left).len(), 3);
+    }
+
+    #[test]
+    fn corner_cell_has_two_orthogonal_neighbors() {
+        let top_left = Position::new(0, 0);
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(board.orthogonal_neighbors(top_left).len(), 2);
     }
 
     #[test]
@@ -176,6 +234,27 @@ mod tests {
         assert!(board
             .tiles_in_direction(top_left, Offset::new(0, -1))
             .is_empty());
+    }
+
+    #[test]
+    fn positions_between_two_cells_in_a_row_are_returned() {
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(
+            board.positions_between(Position::new(1, 0), Position::new(1, 3)),
+            vec![Position::new(1, 1), Position::new(1, 2)],
+        );
+    }
+
+    #[test]
+    fn adjacent_horizontal_cells_have_four_common_neighbors() {
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(
+            board.common_neighbors(Position::new(1, 1), Position::new(1, 2))
+                .len(),
+            4,
+        );
     }
 
     #[test]
