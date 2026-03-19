@@ -465,7 +465,9 @@ impl Quantifier {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Clue {
-    Nonsense { text: String },
+    Nonsense {
+        text: String,
+    },
     CountCells {
         selector: CellSelector,
         answer: Answer,
@@ -593,8 +595,8 @@ impl Clue {
 #[cfg(test)]
 mod tests {
     use super::{
-        CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line,
-        NONSENSE_TEXTS, Parity, PersonGroup, PersonPredicate, Quantifier,
+        CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line, NONSENSE_TEXTS,
+        Parity, PersonGroup, PersonPredicate, Quantifier,
     };
     use crate::{geometry::Offset, types::Answer};
 

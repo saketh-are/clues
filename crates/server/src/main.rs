@@ -15,7 +15,8 @@ use axum::{
     routing::{get, post},
 };
 use clues_core::{
-    Answer, ForcedAnswer, Puzzle, Visibility, analyze_revealed_puzzle, generate_puzzle_with_seed,
+    Answer, ClueScoreTerms, ForcedAnswer, GeneratedPuzzle, Visibility, analyze_revealed_puzzle,
+    generate_puzzle_with_seed,
 };
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -26,7 +27,7 @@ const SEED_MASK: u64 = 0xFFFF_FFFF_FFFF;
 #[derive(Clone)]
 struct AppState {
     next_id: Arc<AtomicU64>,
-    puzzles: Arc<Mutex<HashMap<u64, Puzzle>>>,
+    puzzles: Arc<Mutex<HashMap<u64, GeneratedPuzzle>>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -39,6 +40,8 @@ struct PuzzleResponse {
     id: u64,
     seed: String,
     cells: Vec<Vec<CellResponse>>,
+    generated_score_series: Vec<ClueScoreTerms>,
+    generated_clue_texts: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -47,6 +50,7 @@ struct CellResponse {
     role: String,
     clue: Option<String>,
     is_nonsense: bool,
+    score_terms: Option<ClueScoreTerms>,
     revealed_answer: Option<Answer>,
     revealed: bool,
 }
@@ -55,6 +59,7 @@ struct CellResponse {
 struct GuessResponse {
     clue: String,
     is_nonsense: bool,
+    score_terms: ClueScoreTerms,
 }
 
 #[derive(Debug, Deserialize)]
@@ -109,13 +114,13 @@ async fn new_puzzle(
     let generated = generate_puzzle_with_seed(seed)
         .map_err(|error| AppError::internal(format!("failed to generate puzzle: {error:?}")))?;
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-    let response = PuzzleResponse::from_puzzle(id, seed, &generated.puzzle);
+    let response = PuzzleResponse::from_generated_puzzle(id, seed, &generated);
 
     state
         .puzzles
         .lock()
         .map_err(|_| AppError::internal("failed to lock puzzle store"))?
-        .insert(id, generated.puzzle);
+        .insert(id, generated);
 
     Ok(Json(response))
 }
@@ -129,9 +134,10 @@ async fn guess_cell(
         .puzzles
         .lock()
         .map_err(|_| AppError::internal("failed to lock puzzle store"))?;
-    let puzzle = puzzles
+    let generated = puzzles
         .get_mut(&id)
         .ok_or_else(|| AppError::not_found("puzzle not found"))?;
+    let puzzle = &mut generated.puzzle;
 
     {
         let row_cells = puzzle
@@ -182,18 +188,25 @@ async fn guess_cell(
 
     Ok(Json(GuessResponse {
         clue: puzzle.cells[row][col].clue.text(),
-        is_nonsense: matches!(puzzle.cells[row][col].clue, clues_core::Clue::Nonsense { .. }),
+        is_nonsense: matches!(
+            puzzle.cells[row][col].clue,
+            clues_core::Clue::Nonsense { .. }
+        ),
+        score_terms: generated.clue_score_terms[row][col].clone(),
     }))
 }
 
 impl PuzzleResponse {
-    fn from_puzzle(id: u64, seed: u64, puzzle: &Puzzle) -> Self {
-        let cells = puzzle
+    fn from_generated_puzzle(id: u64, seed: u64, generated: &GeneratedPuzzle) -> Self {
+        let cells = generated
+            .puzzle
             .cells
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(row_index, row)| {
                 row.iter()
-                    .map(|cell| CellResponse {
+                    .enumerate()
+                    .map(|(col_index, cell)| CellResponse {
                         name: cell.name.clone(),
                         role: cell.role.clone(),
                         clue: if cell.state == Visibility::Revealed {
@@ -203,6 +216,11 @@ impl PuzzleResponse {
                         },
                         is_nonsense: cell.state == Visibility::Revealed
                             && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
+                        score_terms: if cell.state == Visibility::Revealed {
+                            Some(generated.clue_score_terms[row_index][col_index].clone())
+                        } else {
+                            None
+                        },
                         revealed_answer: if cell.state == Visibility::Revealed {
                             Some(cell.answer)
                         } else {
@@ -218,6 +236,8 @@ impl PuzzleResponse {
             id,
             seed: format_seed(seed),
             cells,
+            generated_score_series: generated.generation_score_series.clone(),
+            generated_clue_texts: generated.generation_clue_texts.clone(),
         }
     }
 }

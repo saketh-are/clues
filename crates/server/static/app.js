@@ -27,6 +27,7 @@ const finishModalEl = document.querySelector("#finish-modal");
 const finishBackdropEl = document.querySelector("#finish-backdrop");
 const finishMessageEl = document.querySelector("#finish-message");
 const finishDismissButton = document.querySelector("#finish-dismiss");
+const scoreDebugEl = document.querySelector("#score-debug");
 const progressStoragePrefix = "clues-progress:v1:";
 const noteTapDelayMs = 420;
 const noteColors = new Set(["yellow", "red", "green"]);
@@ -77,6 +78,12 @@ const state = {
   timerCompletedAt: null,
   completionAcknowledged: false,
   pendingConfirmAction: null,
+  scoreDebugVisible: false,
+  hoveredScoreMetric: null,
+  scoreDebugTab: "revealed",
+  generatedScoreSeries: [],
+  generatedClueTexts: [],
+  initialRevealed: null,
 };
 
 function normalizeSeed(value) {
@@ -399,6 +406,12 @@ async function loadPuzzle(seed, options = {}) {
   state.puzzleId = puzzle.id;
   state.currentSeed = puzzle.seed;
   state.cells = puzzle.cells;
+  state.generatedScoreSeries = Array.isArray(puzzle.generated_score_series)
+    ? puzzle.generated_score_series
+    : [];
+  state.generatedClueTexts = Array.isArray(puzzle.generated_clue_texts)
+    ? puzzle.generated_clue_texts
+    : [];
   state.guesses = puzzle.cells.map((row) =>
     row.map((cell) => (cell.revealed_answer ? cell.revealed_answer : null)),
   );
@@ -411,6 +424,11 @@ async function loadPuzzle(seed, options = {}) {
   state.timerStartedAt = null;
   state.timerCompletedAt = null;
   state.completionAcknowledged = false;
+  state.scoreDebugTab = "revealed";
+  state.initialRevealed =
+    puzzle.cells.flatMap((row, rowIndex) =>
+      row.map((cell, colIndex) => ({ cell, rowIndex, colIndex })),
+    ).find(({ cell }) => cell.revealed && cell.score_terms) ?? null;
   clearPendingNoteTap();
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
@@ -510,6 +528,8 @@ function renderBoard() {
       boardEl.appendChild(fragment);
     });
   });
+
+  renderScoreDebugPanel();
 }
 
 async function fetchValidatedClue(row, col, guess) {
@@ -539,9 +559,507 @@ function applyAcceptedGuess(row, col, guess, clueResult) {
   state.guesses[row][col] = guess;
   state.cells[row][col].clue = clueResult.clue;
   state.cells[row][col].is_nonsense = clueResult.is_nonsense === true;
+  state.cells[row][col].score_terms = clueResult.score_terms ?? null;
   state.hiddenClues.delete(guessKey(row, col));
   state.moves = state.moves.filter((move) => move.row !== row || move.col !== col);
   state.moves.push({ row, col, guess });
+}
+
+function formatScoreValue(value) {
+  if (!Number.isFinite(value)) {
+    return "0";
+  }
+
+  return Math.abs(value) >= 10 ? value.toFixed(1) : value.toFixed(2);
+}
+
+function createSvgElement(name) {
+  return document.createElementNS("http://www.w3.org/2000/svg", name);
+}
+
+function metricKey(label) {
+  return label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+}
+
+function applyScoreMetricFocus(metricKeyValue) {
+  state.hoveredScoreMetric = metricKeyValue;
+
+  scoreDebugEl
+    .querySelectorAll(
+      ".score-debug-series, .score-debug-series-connector, .score-debug-series-label, .score-debug-legend-item",
+    )
+    .forEach((element) => {
+      const key = element.dataset.metric;
+      const shouldFade =
+        metricKeyValue !== null && key !== metricKeyValue && key !== "score";
+      element.classList.toggle("is-faded", shouldFade);
+    });
+}
+
+function revealedScoreEntries() {
+  const entries = [];
+  const seen = new Set();
+
+  if (state.initialRevealed) {
+    const { cell, rowIndex, colIndex } = state.initialRevealed;
+    const key = guessKey(rowIndex, colIndex);
+    seen.add(key);
+    entries.push({ cell, rowIndex, colIndex, key });
+  }
+
+  state.moves.forEach((move) => {
+    const cell = state.cells[move.row]?.[move.col];
+    if (!cell?.score_terms) {
+      return;
+    }
+
+    const key = guessKey(move.row, move.col);
+    if (seen.has(key)) {
+      return;
+    }
+
+    seen.add(key);
+    entries.push({ cell, rowIndex: move.row, colIndex: move.col, key });
+  });
+
+  return entries;
+}
+
+function valuesRange(values) {
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+
+  if (min === max) {
+    if (min === 0) {
+      return { min: -1, max: 1 };
+    }
+
+    const padding = Math.abs(min) * 0.2 || 1;
+    return { min: min - padding, max: max + padding };
+  }
+
+  return { min, max };
+}
+
+function valueToChartY(value, min, max, height, paddingTop, paddingBottom) {
+  const usableHeight = height - paddingTop - paddingBottom;
+  return height - paddingBottom - ((value - min) / (max - min)) * usableHeight;
+}
+
+function createCombinedChart(title, metricSeries, clueTexts) {
+  const sectionEl = document.createElement("section");
+  sectionEl.className = "score-debug-metric";
+
+  const titleEl = document.createElement("h3");
+  titleEl.className = "score-debug-chart-title";
+  titleEl.textContent = title;
+  sectionEl.appendChild(titleEl);
+
+  const width = 760;
+  const height = 240;
+  const chartPadding = {
+    top: 14,
+    right: 132,
+    bottom: 34,
+    left: 48,
+  };
+  const svgEl = createSvgElement("svg");
+  svgEl.setAttribute("class", "score-debug-chart");
+  svgEl.setAttribute("viewBox", `0 0 ${width} ${height}`);
+  svgEl.setAttribute("preserveAspectRatio", "none");
+
+  const allValues = metricSeries.flatMap((metric) => metric.values);
+  const { min, max } = valuesRange(allValues);
+  const plotRight = width - chartPadding.right;
+  const plotBottom = height - chartPadding.bottom;
+  const xLabel = plotRight + 10;
+  const yAtValue = (value) =>
+    valueToChartY(value, min, max, height, chartPadding.top, chartPadding.bottom);
+  const chartCount = metricSeries[0]?.values.length ?? 0;
+  const xStep =
+    chartCount <= 1 ? 0 : (plotRight - chartPadding.left) / (chartCount - 1);
+  const xAtIndex = (index) => chartPadding.left + xStep * index;
+
+  if (min < 0 && max > 0) {
+    const baseline = createSvgElement("line");
+    const baselineY = yAtValue(0);
+    baseline.setAttribute("x1", String(chartPadding.left));
+    baseline.setAttribute("x2", String(plotRight));
+    baseline.setAttribute("y1", String(baselineY));
+    baseline.setAttribute("y2", String(baselineY));
+    baseline.setAttribute("class", "score-debug-baseline");
+    svgEl.appendChild(baseline);
+  }
+
+  const tickValues = [max];
+  if (min < 0 && max > 0) {
+    tickValues.push(0);
+  }
+  if (min !== max) {
+    tickValues.push(min);
+  }
+
+  [...new Set(tickValues)].forEach((value) => {
+    const y = yAtValue(value);
+    const gridLine = createSvgElement("line");
+    gridLine.setAttribute("x1", String(chartPadding.left));
+    gridLine.setAttribute("x2", String(plotRight));
+    gridLine.setAttribute("y1", String(y));
+    gridLine.setAttribute("y2", String(y));
+    gridLine.setAttribute("class", "score-debug-grid");
+    svgEl.appendChild(gridLine);
+
+    const textEl = createSvgElement("text");
+    textEl.setAttribute("x", String(chartPadding.left - 8));
+    textEl.setAttribute("y", String(y + 3));
+    textEl.setAttribute("text-anchor", "end");
+    textEl.setAttribute("class", "score-debug-axis-label");
+    textEl.textContent = formatScoreValue(value);
+    svgEl.appendChild(textEl);
+  });
+
+  const axisLine = createSvgElement("line");
+  axisLine.setAttribute("x1", String(chartPadding.left));
+  axisLine.setAttribute("x2", String(chartPadding.left));
+  axisLine.setAttribute("y1", String(chartPadding.top));
+  axisLine.setAttribute("y2", String(plotBottom));
+  axisLine.setAttribute("class", "score-debug-axis");
+  svgEl.appendChild(axisLine);
+
+  const xAxisLine = createSvgElement("line");
+  xAxisLine.setAttribute("x1", String(chartPadding.left));
+  xAxisLine.setAttribute("x2", String(plotRight));
+  xAxisLine.setAttribute("y1", String(plotBottom));
+  xAxisLine.setAttribute("y2", String(plotBottom));
+  xAxisLine.setAttribute("class", "score-debug-axis");
+  svgEl.appendChild(xAxisLine);
+
+  const tooltipEl = document.createElement("div");
+  tooltipEl.className = "score-debug-tooltip";
+  tooltipEl.hidden = true;
+  sectionEl.appendChild(tooltipEl);
+
+  const showTooltip = (event, text) => {
+    if (!text) {
+      return;
+    }
+
+    tooltipEl.textContent = text;
+    tooltipEl.hidden = false;
+    const rect = sectionEl.getBoundingClientRect();
+    const x = event.clientX - rect.left + 10;
+    const y = event.clientY - rect.top - 30;
+    tooltipEl.style.left = `${x}px`;
+    tooltipEl.style.top = `${Math.max(8, y)}px`;
+  };
+
+  const hideTooltip = () => {
+    tooltipEl.hidden = true;
+  };
+
+  clueTexts.forEach((text, index) => {
+    const x = xAtIndex(index);
+
+    const tick = createSvgElement("line");
+    tick.setAttribute("x1", String(x));
+    tick.setAttribute("x2", String(x));
+    tick.setAttribute("y1", String(plotBottom));
+    tick.setAttribute("y2", String(plotBottom + 7));
+    tick.setAttribute("class", "score-debug-clue-tick");
+    svgEl.appendChild(tick);
+
+    const marker = createSvgElement("circle");
+    marker.setAttribute("cx", String(x));
+    marker.setAttribute("cy", String(plotBottom + 14));
+    marker.setAttribute("r", "3.2");
+    marker.setAttribute("class", "score-debug-clue-marker");
+    marker.addEventListener("mouseenter", (event) => {
+      showTooltip(event, text);
+    });
+    marker.addEventListener("mousemove", (event) => {
+      showTooltip(event, text);
+    });
+    marker.addEventListener("mouseleave", hideTooltip);
+    svgEl.appendChild(marker);
+
+    const label = createSvgElement("text");
+    label.setAttribute("x", String(x));
+    label.setAttribute("y", String(plotBottom + 28));
+    label.setAttribute("text-anchor", "middle");
+    label.setAttribute("class", "score-debug-x-label");
+    label.textContent = String(index + 1);
+    label.addEventListener("mouseenter", (event) => {
+      showTooltip(event, text);
+    });
+    label.addEventListener("mousemove", (event) => {
+      showTooltip(event, text);
+    });
+    label.addEventListener("mouseleave", hideTooltip);
+    svgEl.appendChild(label);
+  });
+
+  const labelAnchors = [];
+
+  metricSeries.forEach((metric, metricIndex) => {
+    const key = metricKey(metric.label);
+    const seriesEl = createSvgElement("g");
+    seriesEl.setAttribute("class", "score-debug-series");
+    seriesEl.dataset.metric = key;
+
+    const points = metric.values
+      .map((value, index) => {
+        const x = xAtIndex(index);
+        const y = yAtValue(value);
+        return `${x},${y}`;
+      })
+      .join(" ");
+
+    const lineEl = createSvgElement("polyline");
+    lineEl.setAttribute("points", points);
+    lineEl.setAttribute("class", "score-debug-line");
+    lineEl.style.stroke = metric.color;
+    seriesEl.appendChild(lineEl);
+
+    metric.values.forEach((value, index) => {
+      const dotEl = createSvgElement("circle");
+      const x = xAtIndex(index);
+      const y = yAtValue(value);
+      dotEl.setAttribute("cx", String(x));
+      dotEl.setAttribute("cy", String(y));
+      dotEl.setAttribute("r", index === metric.values.length - 1 ? "2.6" : "1.8");
+      dotEl.setAttribute("class", "score-debug-dot");
+      dotEl.style.fill = metric.color;
+      dotEl.style.opacity = index === metric.values.length - 1 ? "1" : "0.78";
+      dotEl.style.stroke = metricIndex === 0 && index === metric.values.length - 1 ? "rgba(255,255,255,0.85)" : "transparent";
+      dotEl.style.strokeWidth = "0.9";
+      seriesEl.appendChild(dotEl);
+    });
+
+    svgEl.appendChild(seriesEl);
+
+    if (metric.values.length > 0) {
+      labelAnchors.push({
+        key,
+        color: metric.color,
+        label: metric.label,
+        x: xAtIndex(metric.values.length - 1),
+        y: yAtValue(metric.values[metric.values.length - 1]),
+      });
+    }
+  });
+
+  labelAnchors.sort((left, right) => left.y - right.y);
+  let previousY = chartPadding.top + 8;
+  labelAnchors.forEach((anchor) => {
+    anchor.labelY = Math.max(anchor.y, previousY);
+    previousY = anchor.labelY + 11;
+  });
+
+  for (let index = labelAnchors.length - 1; index >= 0; index -= 1) {
+    const nextY =
+      index === labelAnchors.length - 1
+        ? plotBottom - 4
+        : labelAnchors[index + 1].labelY - 11;
+    labelAnchors[index].labelY = Math.min(labelAnchors[index].labelY, nextY);
+  }
+
+  labelAnchors.forEach((anchor) => {
+    const connector = createSvgElement("line");
+    connector.setAttribute("x1", String(anchor.x + 2));
+    connector.setAttribute("x2", String(xLabel - 4));
+    connector.setAttribute("y1", String(anchor.y));
+    connector.setAttribute("y2", String(anchor.labelY));
+    connector.setAttribute("class", "score-debug-series-connector");
+    connector.dataset.metric = anchor.key;
+    connector.style.stroke = anchor.color;
+    svgEl.appendChild(connector);
+
+    const labelEl = createSvgElement("text");
+    labelEl.setAttribute("x", String(xLabel));
+    labelEl.setAttribute("y", String(anchor.labelY + 3));
+    labelEl.setAttribute("class", "score-debug-series-label");
+    labelEl.dataset.metric = anchor.key;
+    labelEl.style.fill = anchor.color;
+    labelEl.textContent = anchor.label;
+    if (anchor.key !== "score") {
+      labelEl.addEventListener("mouseenter", () => {
+        applyScoreMetricFocus(anchor.key);
+      });
+      labelEl.addEventListener("mouseleave", () => {
+        applyScoreMetricFocus(null);
+      });
+    }
+    svgEl.appendChild(labelEl);
+  });
+
+  sectionEl.appendChild(svgEl);
+
+  const legendEl = document.createElement("div");
+  legendEl.className = "score-debug-legend";
+
+  metricSeries.forEach((metric) => {
+    const key = metricKey(metric.label);
+    const itemEl = document.createElement("div");
+    itemEl.className = "score-debug-legend-item";
+    itemEl.dataset.metric = key;
+
+    const swatchEl = document.createElement("span");
+    swatchEl.className = "score-debug-swatch";
+    swatchEl.style.background = metric.color;
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "score-debug-legend-label";
+    labelEl.textContent = metric.label;
+
+    const valueEl = document.createElement("span");
+    valueEl.className = "score-debug-legend-value";
+    valueEl.textContent = formatScoreValue(metric.values[metric.values.length - 1] ?? 0);
+
+    itemEl.append(swatchEl, labelEl, valueEl);
+    if (key !== "score") {
+      itemEl.addEventListener("mouseenter", () => {
+        applyScoreMetricFocus(key);
+      });
+      itemEl.addEventListener("mouseleave", () => {
+        applyScoreMetricFocus(null);
+      });
+    }
+    legendEl.appendChild(itemEl);
+  });
+
+  sectionEl.appendChild(legendEl);
+  return sectionEl;
+}
+
+function scoreDebugDataForActiveTab() {
+  if (state.scoreDebugTab === "generated") {
+    return {
+      series: state.generatedScoreSeries,
+      clueTexts: state.generatedClueTexts,
+    };
+  }
+
+  const entries = revealedScoreEntries();
+  return {
+    series: entries.map(({ cell }) => cell.score_terms),
+    clueTexts: entries.map(({ cell }) => cell.clue ?? ""),
+  };
+}
+
+function renderScoreDebugPanel() {
+  if (!state.scoreDebugVisible) {
+    scoreDebugEl.hidden = true;
+    scoreDebugEl.innerHTML = "";
+    return;
+  }
+
+  const { series: activeSeries, clueTexts } = scoreDebugDataForActiveTab();
+  if (activeSeries.length === 0) {
+    scoreDebugEl.hidden = true;
+    scoreDebugEl.innerHTML = "";
+    return;
+  }
+
+  const metrics = [
+    ["combination_size", "combination_size", "#2f7a61"],
+    ["combined_new_forced", "combined_new_forced", "#cf5f3f"],
+    ["standalone_forced", "standalone_forced", "#b43c2f"],
+    ["combined_gain", "combined_gain", "#6f58c9"],
+    ["alone_gain", "alone_gain", "#8b6b2d"],
+    ["synergy_gain", "synergy_gain", "#208a8d"],
+    ["triviality_penalty", "triviality_penalty", "#58606f"],
+    ["family_weight", "family_weight", "#d07d1f"],
+    ["score", "score", "#1f2430"],
+  ];
+
+  scoreDebugEl.hidden = false;
+  scoreDebugEl.innerHTML = "";
+
+  const cardEl = document.createElement("div");
+  cardEl.className = "score-debug-card";
+
+  const headerEl = document.createElement("div");
+  headerEl.className = "score-debug-top";
+
+  const titleEl = document.createElement("h2");
+  titleEl.className = "score-debug-title";
+  titleEl.textContent = "Clue Score";
+
+  const metaEl = document.createElement("span");
+  metaEl.className = "score-debug-meta";
+  metaEl.textContent =
+    state.scoreDebugTab === "generated"
+      ? `${activeSeries.length} generated`
+      : `${activeSeries.length} revealed`;
+
+  headerEl.append(titleEl, metaEl);
+  cardEl.appendChild(headerEl);
+
+  const tabsEl = document.createElement("div");
+  tabsEl.className = "score-debug-tabs";
+
+  [
+    ["revealed", "Revealed"],
+    ["generated", "Generated"],
+  ].forEach(([value, label]) => {
+    const tabEl = document.createElement("button");
+    tabEl.type = "button";
+    tabEl.className = "score-debug-tab";
+    if (state.scoreDebugTab === value) {
+      tabEl.classList.add("is-active");
+    }
+    tabEl.textContent = label;
+    tabEl.addEventListener("click", () => {
+      state.scoreDebugTab = value;
+      state.hoveredScoreMetric = null;
+      renderScoreDebugPanel();
+    });
+    tabsEl.appendChild(tabEl);
+  });
+
+  cardEl.appendChild(tabsEl);
+
+  const chartsEl = document.createElement("div");
+  chartsEl.className = "score-debug-charts";
+  const metricSeries = metrics.map(([key, label, color]) => ({
+    label,
+    color,
+    values: activeSeries.map((terms) => Number(terms?.[key] ?? 0)),
+  }));
+  const scoreSeries = metricSeries.filter((metric) => metric.label === "score");
+  const factorSeries = metricSeries.filter((metric) => metric.label !== "score");
+  chartsEl.appendChild(createCombinedChart("Factors", factorSeries, clueTexts));
+  chartsEl.appendChild(createCombinedChart("Score", scoreSeries, clueTexts));
+
+  cardEl.appendChild(chartsEl);
+  scoreDebugEl.appendChild(cardEl);
+  applyScoreMetricFocus(state.hoveredScoreMetric);
+}
+
+function shouldIgnoreDebugShortcut(event) {
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    return true;
+  }
+
+  const target = event.target;
+  if (!(target instanceof HTMLElement)) {
+    return false;
+  }
+
+  return (
+    target.isContentEditable ||
+    target.tagName === "INPUT" ||
+    target.tagName === "TEXTAREA" ||
+    target.tagName === "SELECT"
+  );
+}
+
+function toggleScoreDebugOverlay() {
+  state.scoreDebugVisible = !state.scoreDebugVisible;
+  if (!state.scoreDebugVisible) {
+    applyScoreMetricFocus(null);
+  }
+  renderScoreDebugPanel();
 }
 
 function clearPendingNoteTap() {
@@ -848,6 +1366,24 @@ errorDismissButton.addEventListener("click", closeErrorModal);
 startButton.addEventListener("click", startPuzzle);
 finishBackdropEl.addEventListener("click", dismissFinishModal);
 finishDismissButton.addEventListener("click", dismissFinishModal);
+scoreDebugEl.addEventListener("click", (event) => {
+  if (event.target === scoreDebugEl) {
+    toggleScoreDebugOverlay();
+  }
+});
+scoreDebugEl.addEventListener("mouseleave", () => {
+  applyScoreMetricFocus(null);
+});
+window.addEventListener("keydown", (event) => {
+  if (shouldIgnoreDebugShortcut(event)) {
+    return;
+  }
+
+  if (event.key.toLowerCase() === "d") {
+    event.preventDefault();
+    toggleScoreDebugOverlay();
+  }
+});
 guessInnocentButton.addEventListener("click", async () => {
   if (!state.modalCell) {
     return;

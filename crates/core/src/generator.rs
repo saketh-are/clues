@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom};
+use serde::{Deserialize, Serialize};
 
 use crate::{
     clue::{
@@ -9,7 +10,7 @@ use crate::{
     },
     geometry::{BoardShape, Position},
     puzzle::{Cell, Puzzle, Visibility},
-    solver::{ForcedAnswer, SolveError, solve_clues_with_known_mask},
+    solver::{ForcedAnswer, SolutionSet, SolveError, solve_clues_with_known_mask},
     types::{Answer, NAMES, Name, ROLES, Role},
 };
 
@@ -20,15 +21,33 @@ const MIN_ROLE_POOL_SIZE: usize = 10;
 const MAX_ROLE_POOL_SIZE: usize = 15;
 const MAX_PUZZLE_ATTEMPTS: usize = 64;
 const MAX_CLUE_ATTEMPTS: usize = 128;
+const MAX_SCORED_CANDIDATES: usize = 24;
+const CLUE_SCORE_TEMPERATURE: f64 = 0.9;
 const FULL_MASK: u32 = (1u32 << CELL_COUNT) - 1;
 const SID_NAME: &str = "Sid";
 const BAKER_ROLE: &str = "Baker";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClueScoreTerms {
+    pub combination_size: usize,
+    pub combined_new_forced: usize,
+    pub standalone_forced: usize,
+    pub combined_gain: f64,
+    pub alone_gain: f64,
+    pub synergy_gain: f64,
+    pub triviality_penalty: f64,
+    pub family_weight: f64,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct GeneratedPuzzle {
     pub puzzle: Puzzle,
     pub first_revealed_name: Name,
     pub first_revealed_answer: Answer,
+    pub clue_score_terms: Vec<Vec<ClueScoreTerms>>,
+    pub generation_score_series: Vec<ClueScoreTerms>,
+    pub generation_clue_texts: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,8 +77,21 @@ pub fn generate_puzzle_with_seed(seed: u64) -> Result<GeneratedPuzzle, GenerateE
 pub(crate) fn generate_puzzle_with_rng<R: Rng + ?Sized>(
     rng: &mut R,
 ) -> Result<GeneratedPuzzle, GenerateError> {
+    generate_puzzle_with_rng_and_instrumentation(rng, None)
+}
+
+fn generate_puzzle_with_rng_and_instrumentation<R: Rng + ?Sized>(
+    rng: &mut R,
+    mut instrumentation: Option<&mut GenerationInstrumentation>,
+) -> Result<GeneratedPuzzle, GenerateError> {
     for _ in 0..MAX_PUZZLE_ATTEMPTS {
-        if let Some(generated) = try_generate_puzzle(rng)? {
+        let mut attempt_instrumentation = GenerationInstrumentation::default();
+        if let Some(generated) =
+            try_generate_puzzle(rng, Some(&mut attempt_instrumentation))?
+        {
+            if let Some(global) = instrumentation.as_deref_mut() {
+                global.merge(attempt_instrumentation);
+            }
             return Ok(generated);
         }
     }
@@ -202,8 +234,33 @@ impl Layout {
     }
 }
 
+#[derive(Debug, Clone)]
+struct ScoredCandidate {
+    clue: Clue,
+    solution: SolutionSet,
+    newly_forced: Vec<usize>,
+    forced_unknown: Vec<usize>,
+    terms: ClueScoreTerms,
+}
+
+#[derive(Debug, Default, Clone)]
+struct GenerationInstrumentation {
+    candidate_combination_sizes: Vec<usize>,
+    selected_combination_sizes: Vec<usize>,
+}
+
+impl GenerationInstrumentation {
+    fn merge(&mut self, other: Self) {
+        self.candidate_combination_sizes
+            .extend(other.candidate_combination_sizes);
+        self.selected_combination_sizes
+            .extend(other.selected_combination_sizes);
+    }
+}
+
 fn try_generate_puzzle<R: Rng + ?Sized>(
     rng: &mut R,
+    mut instrumentation: Option<&mut GenerationInstrumentation>,
 ) -> Result<Option<GeneratedPuzzle>, GenerateError> {
     if NAMES.len() < CELL_COUNT {
         return Err(GenerateError::NotEnoughNames);
@@ -232,6 +289,9 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     let first_answer = random_answer(rng);
 
     let mut clues = vec![None; CELL_COUNT];
+    let mut clue_score_terms = vec![None; CELL_COUNT];
+    let mut generation_score_series = Vec::with_capacity(CELL_COUNT);
+    let mut generation_clue_texts = Vec::with_capacity(CELL_COUNT);
     let mut answers = vec![None; CELL_COUNT];
     let mut known_mask = 0u32;
     let mut known_innocent_mask = 0u32;
@@ -248,15 +308,17 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     while let Some(current_index) = pending.pop() {
         let current_answer = answers[current_index].unwrap();
         let current_clues = collect_clues(&clues);
+        let revealed_only =
+            solve_clues_with_known_mask(&puzzle, &[], known_mask, known_innocent_mask)?;
         let baseline =
             solve_clues_with_known_mask(&puzzle, &current_clues, known_mask, known_innocent_mask)?;
 
-        if !baseline.analysis.has_solution {
+        if !revealed_only.analysis.has_solution || !baseline.analysis.has_solution {
             return Ok(None);
         }
 
         let require_new_force = has_unforced_unknown(&baseline.analysis, known_mask);
-        let mut accepted = None;
+        let mut candidates = Vec::new();
 
         for _ in 0..MAX_CLUE_ATTEMPTS {
             let Some(witness) = sample_witness_assignment(rng, &baseline, known_mask) else {
@@ -277,15 +339,14 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 continue;
             }
 
-            let (candidate, analysis, newly_forced, forced_unknown) =
-                normalize_generated_clue(
-                    rng,
-                    candidate,
-                    current_answer,
-                    &baseline,
-                    &solved,
-                    known_mask,
-                );
+            let (candidate, solution, newly_forced, forced_unknown) = normalize_generated_clue(
+                rng,
+                candidate,
+                current_answer,
+                &baseline,
+                &solved,
+                known_mask,
+            );
 
             if require_new_force && newly_forced.is_empty() {
                 continue;
@@ -295,15 +356,85 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 continue;
             }
 
-            accepted = Some((candidate, analysis, newly_forced, forced_unknown));
-            break;
+            let alone = solve_clues_with_known_mask(
+                &puzzle,
+                &[candidate.clone()],
+                known_mask,
+                known_innocent_mask,
+            )?;
+
+            if !alone.analysis.has_solution {
+                continue;
+            }
+
+            let mut effective_clues = current_clues.clone();
+            effective_clues.push(candidate.clone());
+            let target_indices = if !newly_forced.is_empty() {
+                &newly_forced
+            } else {
+                &forced_unknown
+            };
+            let targets = target_indices
+                .iter()
+                .filter_map(|index| {
+                    let forced = forced_answer_at(&solution.analysis, *index);
+                    (forced != ForcedAnswer::Neither).then_some((*index, forced))
+                })
+                .collect::<Vec<_>>();
+            let combination_size = minimal_forcing_subset_size(
+                &puzzle,
+                &effective_clues,
+                known_mask,
+                known_innocent_mask,
+                &targets,
+            )?;
+            if let Some(stats) = instrumentation.as_deref_mut() {
+                stats.candidate_combination_sizes.push(combination_size);
+            }
+            let terms = build_clue_score_terms(
+                &layout,
+                &candidate,
+                &revealed_only,
+                &alone,
+                &baseline,
+                &solution,
+                &newly_forced,
+                combination_size,
+                known_mask,
+            );
+
+            candidates.push(ScoredCandidate {
+                clue: candidate,
+                solution,
+                newly_forced,
+                forced_unknown,
+                terms,
+            });
+
+            if candidates.len() >= MAX_SCORED_CANDIDATES {
+                break;
+            }
         }
 
-        let Some((candidate, analysis, newly_forced, forced_unknown)) = accepted else {
+        let Some(selected) = choose_scored_candidate(rng, candidates) else {
             return Ok(None);
         };
+        let ScoredCandidate {
+            clue: candidate,
+            solution,
+            newly_forced,
+            forced_unknown,
+            terms,
+        } = selected;
+        if let Some(stats) = instrumentation.as_deref_mut() {
+            stats.selected_combination_sizes.push(terms.combination_size);
+        }
+        let analysis = solution.analysis;
 
         clues[current_index] = Some(candidate);
+        clue_score_terms[current_index] = Some(terms);
+        generation_score_series.push(clue_score_terms[current_index].clone().unwrap());
+        generation_clue_texts.push(clues[current_index].as_ref().unwrap().text());
 
         if known_mask == FULL_MASK {
             continue;
@@ -356,6 +487,15 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
             .name
             .clone(),
         first_revealed_answer: first_answer,
+        clue_score_terms: (0..ROWS)
+            .map(|row| {
+                (0..COLS)
+                    .map(|col| clue_score_terms[row * COLS + col].clone().unwrap())
+                    .collect()
+            })
+            .collect(),
+        generation_score_series,
+        generation_clue_texts,
         puzzle,
     }))
 }
@@ -718,19 +858,21 @@ fn normalize_generated_clue<R: Rng + ?Sized>(
     baseline: &crate::solver::SolutionSet,
     solved: &crate::solver::SolutionSet,
     known_mask: u32,
-) -> (Clue, crate::solver::ClueAnalysis, Vec<usize>, Vec<usize>) {
-    if remaining_possibility_count(solved, known_mask) < remaining_possibility_count(baseline, known_mask) {
+) -> (Clue, crate::solver::SolutionSet, Vec<usize>, Vec<usize>) {
+    if remaining_possibility_count(solved, known_mask)
+        < remaining_possibility_count(baseline, known_mask)
+    {
         let newly_forced =
             newly_forced_unknown_indices(&baseline.analysis, &solved.analysis, known_mask);
         let forced_unknown = forced_unknown_indices(&solved.analysis, known_mask);
 
-        (candidate, solved.analysis.clone(), newly_forced, forced_unknown)
+        (candidate, solved.clone(), newly_forced, forced_unknown)
     } else {
         let forced_unknown = forced_unknown_indices(&baseline.analysis, known_mask);
 
         (
             random_nonsense_clue(rng, answer),
-            baseline.analysis.clone(),
+            baseline.clone(),
             Vec::new(),
             forced_unknown,
         )
@@ -759,6 +901,287 @@ fn remaining_possibility_count(solution: &crate::solver::SolutionSet, known_mask
         CELL_COUNT as u32 - known_mask.count_ones() - solution.variable_mask.count_ones();
 
     (solution.assignments.len() as u64) * (1u64 << free_unknown_bits)
+}
+
+fn log2_information_gain(before: u64, after: u64) -> f64 {
+    if before == 0 || after == 0 || after >= before {
+        0.0
+    } else {
+        (before as f64 / after as f64).log2()
+    }
+}
+
+fn minimal_forcing_subset_size(
+    puzzle: &Puzzle,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<usize, SolveError> {
+    if targets.is_empty() {
+        return Ok(0);
+    }
+
+    let mut active = clues.to_vec();
+
+    loop {
+        let mut removable_index = None;
+
+        for index in 0..active.len() {
+            let mut trial = active.clone();
+            trial.remove(index);
+            let solved =
+                solve_clues_with_known_mask(puzzle, &trial, known_mask, known_innocent_mask)?;
+
+            if solved.analysis.has_solution && forces_any_target(&solved.analysis, targets) {
+                removable_index = Some(index);
+                break;
+            }
+        }
+
+        let Some(index) = removable_index else {
+            break;
+        };
+
+        active.remove(index);
+    }
+
+    Ok(active.len())
+}
+
+fn forces_any_target(
+    analysis: &crate::solver::ClueAnalysis,
+    targets: &[(usize, ForcedAnswer)],
+) -> bool {
+    targets
+        .iter()
+        .any(|(index, answer)| forced_answer_at(analysis, *index) == *answer)
+}
+
+fn build_clue_score_terms(
+    layout: &Layout,
+    clue: &Clue,
+    revealed_only: &SolutionSet,
+    alone: &SolutionSet,
+    baseline: &SolutionSet,
+    combined: &SolutionSet,
+    newly_forced: &[usize],
+    combination_size: usize,
+    known_mask: u32,
+) -> ClueScoreTerms {
+    let revealed_count = remaining_possibility_count(revealed_only, known_mask);
+    let baseline_count = remaining_possibility_count(baseline, known_mask);
+    let alone_count = remaining_possibility_count(alone, known_mask);
+    let combined_count = remaining_possibility_count(combined, known_mask);
+    let combined_gain = log2_information_gain(baseline_count, combined_count);
+    let alone_gain = log2_information_gain(revealed_count, alone_count);
+    let synergy_gain = (combined_gain - alone_gain).max(0.0);
+    let standalone_forced = forced_unknown_indices(&alone.analysis, known_mask).len();
+    let combined_new_forced = newly_forced.len();
+    let triviality_penalty = triviality_penalty(layout, clue);
+    let family_weight = family_weight(clue);
+
+    let score = combination_size_bonus(combination_size)
+        + combined_force_score(combined_new_forced)
+        + synergy_bonus(synergy_gain, combination_size, standalone_forced)
+        + moderate_information_bonus(combined_gain)
+        - standalone_force_penalty(standalone_forced)
+        - standalone_information_penalty(alone_gain)
+        - excess_information_penalty(combined_gain)
+        - 1.4 * triviality_penalty
+        + family_weight;
+
+    ClueScoreTerms {
+        combination_size,
+        combined_new_forced,
+        standalone_forced,
+        combined_gain,
+        alone_gain,
+        synergy_gain,
+        triviality_penalty,
+        family_weight,
+        score,
+    }
+}
+
+fn combination_size_bonus(size: usize) -> f64 {
+    match size {
+        0 | 1 => 0.0,
+        2 => 6.5,
+        3 => 10.0,
+        4 => 12.0,
+        _ => 12.0 + (size.saturating_sub(4) as f64) * 0.75,
+    }
+}
+
+fn combined_force_score(count: usize) -> f64 {
+    match count {
+        0 => -2.0,
+        1 => 2.0,
+        2 => 0.5,
+        3 => -1.5,
+        _ => -1.5 - (count as f64 - 3.0) * 1.5,
+    }
+}
+
+fn synergy_bonus(synergy_gain: f64, combination_size: usize, standalone_forced: usize) -> f64 {
+    let capped = synergy_gain.min(2.0);
+
+    if combination_size >= 2 && standalone_forced == 0 {
+        1.8 + 1.2 * capped
+    } else {
+        0.35 * capped
+    }
+}
+
+fn moderate_information_bonus(combined_gain: f64) -> f64 {
+    combined_gain.min(1.25) * 0.45
+}
+
+fn standalone_force_penalty(count: usize) -> f64 {
+    if count == 0 {
+        0.0
+    } else {
+        let count = count as f64;
+        3.5 + 4.5 * count * count
+    }
+}
+
+fn standalone_information_penalty(alone_gain: f64) -> f64 {
+    alone_gain * 1.1
+}
+
+fn excess_information_penalty(combined_gain: f64) -> f64 {
+    let excess = (combined_gain - 2.0).max(0.0);
+    excess * excess * 1.6
+}
+
+fn family_weight(clue: &Clue) -> f64 {
+    match clue {
+        Clue::Nonsense { .. } => 0.0,
+        Clue::CountCells {
+            selector,
+            count,
+            filter,
+            ..
+        } => {
+            let filter_bonus = if *filter == CellFilter::Any { 0.0 } else { 0.2 };
+            match count {
+                Count::Parity(_) => 1.1 + filter_bonus,
+                Count::AtLeast(_) => 0.25 + filter_bonus,
+                Count::Number(_) => {
+                    let selector_weight = match selector {
+                        CellSelector::Board => -1.3,
+                        CellSelector::Row { .. } | CellSelector::Col { .. } => -1.0,
+                        CellSelector::Direction { .. } => -0.5,
+                        CellSelector::Neighbor { .. }
+                        | CellSelector::Between { .. }
+                        | CellSelector::SharedNeighbor { .. } => 0.2,
+                    };
+
+                    selector_weight + filter_bonus
+                }
+            }
+        }
+        Clue::DirectRelation { .. } => -1.0,
+        Clue::RoleCount { count, .. } => match count {
+            Count::Parity(_) => 0.9,
+            Count::AtLeast(_) => 0.1,
+            Count::Number(_) => -0.5,
+        },
+        Clue::RolesComparison { .. } => 1.1,
+        Clue::LineComparison { .. } => 0.9,
+        Clue::Connected { .. } => 0.8,
+        Clue::Quantified { .. } => 1.2,
+    }
+}
+
+fn triviality_penalty(layout: &Layout, clue: &Clue) -> f64 {
+    let scope_size = match clue {
+        Clue::CountCells {
+            selector,
+            count: Count::Number(_),
+            filter,
+            ..
+        } => Some(layout.filtered_positions(selector, *filter).len() as i32),
+        Clue::DirectRelation { .. } => Some(1),
+        Clue::RoleCount {
+            role,
+            count: Count::Number(_),
+            ..
+        } => Some(
+            layout
+                .indices_by_role
+                .get(role)
+                .map(|indices| indices.len())
+                .unwrap_or(0) as i32,
+        ),
+        _ => None,
+    };
+
+    match (clue, scope_size) {
+        (
+            Clue::CountCells {
+                count: Count::Number(number),
+                ..
+            }
+            | Clue::RoleCount {
+                count: Count::Number(number),
+                ..
+            },
+            Some(scope_size),
+        ) if scope_size > 0 => exact_count_triviality(*number, scope_size),
+        (Clue::DirectRelation { .. }, Some(_)) => 1.5,
+        _ => 0.0,
+    }
+}
+
+fn exact_count_triviality(number: i32, scope_size: i32) -> f64 {
+    if number == 0 || number == scope_size {
+        2.0
+    } else if number == 1 || number == scope_size - 1 {
+        1.0
+    } else {
+        0.0
+    }
+}
+
+fn choose_scored_candidate<R: Rng + ?Sized>(
+    rng: &mut R,
+    candidates: Vec<ScoredCandidate>,
+) -> Option<ScoredCandidate> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let max_score = candidates
+        .iter()
+        .map(|candidate| candidate.terms.score)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let weights = candidates
+        .iter()
+        .map(|candidate| ((candidate.terms.score - max_score) / CLUE_SCORE_TEMPERATURE).exp())
+        .collect::<Vec<_>>();
+    let total_weight: f64 = weights.iter().sum();
+
+    if !total_weight.is_finite() || total_weight <= 0.0 {
+        return candidates.into_iter().max_by(|left, right| {
+            left.terms
+                .score
+                .partial_cmp(&right.terms.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+    }
+
+    let mut draw = rng.r#gen::<f64>() * total_weight;
+    for (index, weight) in weights.iter().enumerate() {
+        draw -= *weight;
+        if draw <= 0.0 {
+            return Some(candidates.into_iter().nth(index).unwrap());
+        }
+    }
+
+    candidates.into_iter().last()
 }
 
 fn newly_forced_unknown_indices(
@@ -861,18 +1284,24 @@ fn random_distinct_names<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Option
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use rand::{SeedableRng, rngs::StdRng};
 
     use crate::{
         clue::{CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Count, NONSENSE_TEXTS},
         geometry::Position,
         solver::{ClueAnalysis, SolutionSet, solve_clues_with_known_mask},
+        types::NAMES,
     };
 
     use super::{
-        BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, ROWS, SID_NAME, distinct_roles,
-        filter_is_redundant, generate_puzzle_with_rng, generate_puzzle_with_seed,
-        normalize_generated_clue, sample_roles, sample_witness_assignment,
+        BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, ROWS, SID_NAME,
+        combination_size_bonus, distinct_roles, empty_puzzle, exact_count_triviality,
+        family_weight, filter_is_redundant, generate_puzzle_with_rng,
+        generate_puzzle_with_rng_and_instrumentation, generate_puzzle_with_seed,
+        minimal_forcing_subset_size, normalize_generated_clue, sample_roles,
+        sample_witness_assignment, GenerationInstrumentation,
     };
 
     fn blank_analysis() -> ClueAnalysis {
@@ -1008,15 +1437,14 @@ mod tests {
             variable_mask: 0,
         };
 
-        let (effective, _, newly_forced, forced_unknown) =
-            normalize_generated_clue(
-                &mut rng,
-                candidate,
-                crate::types::Answer::Innocent,
-                &baseline,
-                &solved,
-                0,
-            );
+        let (effective, _, newly_forced, forced_unknown) = normalize_generated_clue(
+            &mut rng,
+            candidate,
+            crate::types::Answer::Innocent,
+            &baseline,
+            &solved,
+            0,
+        );
 
         match effective {
             Clue::Nonsense { text } => assert!(NONSENSE_TEXTS.contains(&text.as_str())),
@@ -1050,18 +1478,17 @@ mod tests {
             variable_mask: 1,
         };
 
-        let (effective, analysis, newly_forced, forced_unknown) =
-            normalize_generated_clue(
-                &mut rng,
-                candidate.clone(),
-                crate::types::Answer::Innocent,
-                &baseline,
-                &solved,
-                0,
-            );
+        let (effective, solved, newly_forced, forced_unknown) = normalize_generated_clue(
+            &mut rng,
+            candidate.clone(),
+            crate::types::Answer::Innocent,
+            &baseline,
+            &solved,
+            0,
+        );
 
         assert_eq!(effective, candidate);
-        assert_eq!(analysis, solved_analysis);
+        assert_eq!(solved.analysis, solved_analysis);
         assert_eq!(newly_forced.len(), CELL_COUNT);
         assert_eq!(forced_unknown.len(), CELL_COUNT);
     }
@@ -1145,5 +1572,130 @@ mod tests {
             &left_column,
             &left_column,
         ));
+    }
+
+    #[test]
+    fn exact_count_triviality_penalizes_extreme_counts() {
+        assert_eq!(exact_count_triviality(0, 5), 2.0);
+        assert_eq!(exact_count_triviality(5, 5), 2.0);
+        assert_eq!(exact_count_triviality(1, 5), 1.0);
+        assert_eq!(exact_count_triviality(4, 5), 1.0);
+        assert_eq!(exact_count_triviality(2, 5), 0.0);
+    }
+
+    #[test]
+    fn family_weights_prefer_comparisons_over_exact_row_counts() {
+        let exact_row = Clue::CountCells {
+            selector: CellSelector::Row { row: 0 },
+            answer: crate::types::Answer::Innocent,
+            count: Count::Number(2),
+            filter: CellFilter::Any,
+        };
+        let comparison = Clue::LineComparison {
+            first_line: crate::clue::Line::Row(0),
+            second_line: crate::clue::Line::Row(1),
+            answer: crate::types::Answer::Innocent,
+            comparison: crate::clue::Comparison::More,
+        };
+
+        assert!(family_weight(&comparison) > family_weight(&exact_row));
+    }
+
+    #[test]
+    fn combination_size_bonus_rewards_two_and_three_clue_dependencies() {
+        assert_eq!(combination_size_bonus(1), 0.0);
+        assert!(combination_size_bonus(2) > combination_size_bonus(1));
+        assert!(combination_size_bonus(3) > combination_size_bonus(2));
+    }
+
+    #[test]
+    fn minimal_forcing_subset_size_measures_two_clue_dependency() {
+        let names = NAMES[..CELL_COUNT]
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        let roles = (0..CELL_COUNT)
+            .map(|_| "Role".to_string())
+            .collect::<Vec<_>>();
+        let puzzle = empty_puzzle(&names, &roles);
+        let anchor_name = puzzle.cells[0][1].name.clone();
+        let clues = vec![
+            Clue::DirectRelation {
+                name: anchor_name,
+                answer: crate::types::Answer::Innocent,
+                direction: crate::clue::Direction::Left,
+            },
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 0 },
+                answer: crate::types::Answer::Innocent,
+                count: Count::Number(1),
+                filter: CellFilter::Any,
+            },
+        ];
+        let solved = solve_clues_with_known_mask(&puzzle, &clues, 0, 0).unwrap();
+
+        assert_eq!(solved.analysis.forced_answers[0][1], ForcedAnswer::Criminal);
+
+        let subset_size =
+            minimal_forcing_subset_size(&puzzle, &clues, 0, 0, &[(1, ForcedAnswer::Criminal)])
+                .unwrap();
+
+        assert_eq!(subset_size, 2);
+    }
+
+    fn histogram(values: &[usize]) -> BTreeMap<usize, usize> {
+        let mut counts = BTreeMap::new();
+
+        for value in values {
+            *counts.entry(*value).or_insert(0) += 1;
+        }
+
+        counts
+    }
+
+    #[test]
+    #[ignore]
+    fn report_combination_size_distribution_for_generated_puzzles() {
+        let puzzle_count = std::env::var("CLUES_COMBO_SAMPLE_SIZE")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(20);
+        let mut stats = GenerationInstrumentation::default();
+
+        for seed in 0..puzzle_count as u64 {
+            let mut rng = StdRng::seed_from_u64(seed);
+            generate_puzzle_with_rng_and_instrumentation(&mut rng, Some(&mut stats)).unwrap();
+        }
+
+        let candidate_histogram = histogram(&stats.candidate_combination_sizes);
+        let selected_histogram = histogram(&stats.selected_combination_sizes);
+        let candidate_total = stats.candidate_combination_sizes.len();
+        let selected_total = stats.selected_combination_sizes.len();
+        let candidate_above_one = stats
+            .candidate_combination_sizes
+            .iter()
+            .filter(|size| **size > 1)
+            .count();
+        let selected_above_one = stats
+            .selected_combination_sizes
+            .iter()
+            .filter(|size| **size > 1)
+            .count();
+
+        println!("sampled_puzzles={puzzle_count}");
+        println!("candidate_total={candidate_total}");
+        println!("selected_total={selected_total}");
+        println!(
+            "candidate_above_one={} ({:.1}%)",
+            candidate_above_one,
+            candidate_above_one as f64 * 100.0 / candidate_total as f64
+        );
+        println!(
+            "selected_above_one={} ({:.1}%)",
+            selected_above_one,
+            selected_above_one as f64 * 100.0 / selected_total as f64
+        );
+        println!("candidate_histogram={candidate_histogram:?}");
+        println!("selected_histogram={selected_histogram:?}");
     }
 }

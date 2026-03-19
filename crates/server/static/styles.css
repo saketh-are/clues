@@ -65,6 +65,227 @@ body {
   gap: 0.28rem;
 }
 
+.score-debug {
+  position: fixed;
+  inset: 0;
+  z-index: 18;
+  padding: 1rem;
+  display: grid;
+  place-items: center;
+  background: rgba(31, 36, 48, 0.32);
+  backdrop-filter: blur(4px);
+}
+
+.score-debug[hidden] {
+  display: none;
+}
+
+.score-debug-title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: 1rem;
+  line-height: 0.98;
+}
+
+.score-debug-card {
+  width: min(92vw, 64rem);
+  max-height: min(88dvh, 56rem);
+  overflow: auto;
+  padding: 0.85rem 0.9rem;
+  display: grid;
+  gap: 0.72rem;
+  background: rgba(255, 251, 246, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  box-shadow: 0 28px 80px rgba(31, 36, 48, 0.24);
+}
+
+.score-debug-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.score-debug-tabs {
+  display: flex;
+  gap: 0.34rem;
+}
+
+.score-debug-tab {
+  border: 1px solid rgba(31, 36, 48, 0.12);
+  border-radius: 999px;
+  padding: 0.24rem 0.56rem;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.74rem;
+  cursor: pointer;
+}
+
+.score-debug-tab.is-active {
+  background: rgba(207, 95, 63, 0.16);
+  color: #8d442e;
+  border-color: rgba(207, 95, 63, 0.26);
+}
+
+.score-debug-meta {
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+.score-debug-charts {
+  display: grid;
+  gap: 0.48rem;
+}
+
+.score-debug-metric {
+  position: relative;
+  padding: 0.42rem 0.48rem 0.46rem;
+  display: grid;
+  gap: 0.4rem;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 0.62rem;
+}
+
+.score-debug-chart-title {
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.score-debug-chart {
+  width: 100%;
+  height: 16rem;
+  display: block;
+}
+
+.score-debug-baseline {
+  stroke: rgba(31, 36, 48, 0.14);
+  stroke-width: 1;
+}
+
+.score-debug-grid {
+  stroke: rgba(31, 36, 48, 0.08);
+  stroke-width: 1;
+}
+
+.score-debug-axis {
+  stroke: rgba(31, 36, 48, 0.22);
+  stroke-width: 1;
+}
+
+.score-debug-axis-label {
+  fill: rgba(31, 36, 48, 0.62);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-debug-clue-tick {
+  stroke: rgba(31, 36, 48, 0.22);
+  stroke-width: 1;
+}
+
+.score-debug-clue-marker {
+  fill: rgba(207, 95, 63, 0.88);
+  cursor: default;
+}
+
+.score-debug-x-label {
+  fill: rgba(31, 36, 48, 0.56);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+
+.score-debug-line {
+  fill: none;
+  stroke: rgba(207, 95, 63, 0.9);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: opacity 120ms ease;
+}
+
+.score-debug-dot {
+  fill: rgba(45, 122, 83, 0.95);
+  transition: opacity 120ms ease;
+}
+
+.score-debug-series-connector {
+  stroke-width: 1.2;
+  opacity: 0.8;
+  transition: opacity 120ms ease;
+}
+
+.score-debug-series-label {
+  font-size: 10px;
+  font-weight: 600;
+  cursor: default;
+  transition: opacity 120ms ease;
+}
+
+.score-debug-tooltip {
+  position: absolute;
+  z-index: 1;
+  max-width: min(24rem, calc(100% - 1rem));
+  padding: 0.35rem 0.48rem;
+  background: rgba(31, 36, 48, 0.94);
+  color: rgba(255, 251, 246, 0.97);
+  border-radius: 0.45rem;
+  font-size: 0.7rem;
+  line-height: 1.25;
+  box-shadow: 0 10px 22px rgba(31, 36, 48, 0.24);
+  pointer-events: none;
+}
+
+.score-debug-series.is-faded .score-debug-line,
+.score-debug-series.is-faded .score-debug-dot,
+.score-debug-series-connector.is-faded,
+.score-debug-series-label.is-faded,
+.score-debug-legend-item.is-faded {
+  opacity: 0.16;
+}
+
+.score-debug-legend {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: 0.26rem 0.55rem;
+}
+
+.score-debug-legend-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.34rem;
+  min-width: 0;
+  transition: opacity 120ms ease;
+}
+
+.score-debug-swatch {
+  width: 0.62rem;
+  height: 0.62rem;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.55);
+}
+
+.score-debug-legend-label {
+  min-width: 0;
+  font-size: 0.74rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.score-debug-legend-value {
+  font-size: 0.72rem;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
 .topbar {
   background: var(--card);
   border: 1px solid var(--line);
@@ -505,5 +726,38 @@ h1 {
   .start-button {
     min-height: 3rem;
     font-size: 1rem;
+  }
+
+  .score-debug {
+    padding: 0.54rem;
+  }
+
+  .score-debug-card {
+    width: min(96vw, 64rem);
+    max-height: 90dvh;
+    padding: 0.68rem 0.72rem;
+  }
+
+  .score-debug-chart-title {
+    font-size: 0.72rem;
+  }
+
+  .score-debug-title {
+    font-size: 0.9rem;
+  }
+
+  .score-debug-tab {
+    font-size: 0.68rem;
+    padding: 0.2rem 0.46rem;
+  }
+
+  .score-debug-meta,
+  .score-debug-legend-label,
+  .score-debug-legend-value {
+    font-size: 0.68rem;
+  }
+
+  .score-debug-chart {
+    height: 11rem;
   }
 }
