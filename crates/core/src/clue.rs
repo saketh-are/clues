@@ -43,10 +43,40 @@ impl fmt::Display for Direction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Column {
+    A,
+    B,
+    C,
+    D,
+}
+
+impl Column {
+    pub const fn index(self) -> u8 {
+        match self {
+            Self::A => 0,
+            Self::B => 1,
+            Self::C => 2,
+            Self::D => 3,
+        }
+    }
+}
+
+impl fmt::Display for Column {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::A => f.write_str("A"),
+            Self::B => f.write_str("B"),
+            Self::C => f.write_str("C"),
+            Self::D => f.write_str("D"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Line {
     Row(u8),
-    Col(u8),
+    Col(Column),
 }
 
 impl fmt::Display for Line {
@@ -167,7 +197,7 @@ pub enum Clue {
         filter: CellFilter,
     },
     Col {
-        col: u8,
+        col: Column,
         answer: Answer,
         count: Count,
         filter: CellFilter,
@@ -332,7 +362,7 @@ impl Clue {
 
 #[cfg(test)]
 mod tests {
-    use super::{CellFilter, Clue, Comparison, Count, Direction, Line, Parity};
+    use super::{CellFilter, Clue, Column, Comparison, Count, Direction, Line, Parity};
     use crate::{
         geometry::Offset,
         types::Answer,
@@ -421,13 +451,13 @@ mod tests {
     #[test]
     fn col_renders_parity_puzzle_text() {
         let clue = Clue::Col {
-            col: 3,
+            col: Column::C,
             answer: Answer::Criminal,
             count: Count::Parity(Parity::Even),
             filter: CellFilter::Any,
         };
 
-        assert_eq!(clue.text(), "Col 3 has an even number of criminals");
+        assert_eq!(clue.text(), "Col C has an even number of criminals");
     }
 
     #[test]
@@ -438,6 +468,16 @@ mod tests {
         };
 
         assert_eq!(clue.text(), "all criminals in row 2 are connected");
+    }
+
+    #[test]
+    fn connected_col_renders_puzzle_text() {
+        let clue = Clue::Connected {
+            answer: Answer::Criminal,
+            line: Line::Col(Column::B),
+        };
+
+        assert_eq!(clue.text(), "all criminals in col B are connected");
     }
 
     #[test]
