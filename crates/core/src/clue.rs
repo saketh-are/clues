@@ -54,6 +54,7 @@ pub enum Parity {
 pub enum CellFilter {
     Any,
     Edge,
+    Corner,
 }
 
 impl CellFilter {
@@ -61,6 +62,7 @@ impl CellFilter {
         match self {
             Self::Any => "",
             Self::Edge => " on the edges",
+            Self::Corner => " in the corners",
         }
     }
 }
@@ -245,6 +247,21 @@ mod tests {
         };
 
         assert_eq!(clue.text(), "Row 2 has 2 innocents on the edges");
+    }
+
+    #[test]
+    fn neighbor_renders_corner_filtered_puzzle_text() {
+        let clue = Clue::Neighbor {
+            name: "Ada".to_string(),
+            answer: Answer::Innocent,
+            count: Count::Parity(Parity::Odd),
+            filter: CellFilter::Corner,
+        };
+
+        assert_eq!(
+            clue.text(),
+            "Ada has an odd number of innocent neighbors in the corners",
+        );
     }
 
     #[test]

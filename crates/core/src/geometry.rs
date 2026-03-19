@@ -44,6 +44,13 @@ impl BoardShape {
             || position.col == self.cols as i16 - 1
     }
 
+    pub fn is_corner(self, position: Position) -> bool {
+        let top_or_bottom = position.row == 0 || position.row == self.rows as i16 - 1;
+        let left_or_right = position.col == 0 || position.col == self.cols as i16 - 1;
+
+        top_or_bottom && left_or_right
+    }
+
     pub fn tiles_in_direction(self, origin: Position, offset: Offset) -> Vec<Position> {
         let mut tiles = Vec::new();
         let mut current = origin.shifted(offset);
@@ -211,6 +218,35 @@ mod tests {
                 .filter(|position| board.is_edge(*position))
                 .count(),
             3,
+        );
+    }
+
+    #[test]
+    fn top_row_has_two_corner_tiles() {
+        let board = BoardShape::new(5, 4);
+
+        assert_eq!(
+            board
+                .row_positions(0)
+                .into_iter()
+                .filter(|position| board.is_corner(*position))
+                .count(),
+            2,
+        );
+    }
+
+    #[test]
+    fn inner_cell_has_one_corner_neighbor() {
+        let board = BoardShape::new(5, 4);
+        let inner = Position::new(1, 1);
+
+        assert_eq!(
+            board
+                .touching_neighbors(inner)
+                .into_iter()
+                .filter(|position| board.is_corner(*position))
+                .count(),
+            1,
         );
     }
 }
