@@ -26,6 +26,8 @@ const confirmCancelButton = document.querySelector("#confirm-cancel");
 const finishModalEl = document.querySelector("#finish-modal");
 const finishBackdropEl = document.querySelector("#finish-backdrop");
 const finishMessageEl = document.querySelector("#finish-message");
+const finishGridEl = document.querySelector("#finish-grid");
+const finishCopyButton = document.querySelector("#finish-copy");
 const finishDismissButton = document.querySelector("#finish-dismiss");
 const scoreDebugEl = document.querySelector("#score-debug");
 const cornerNoteMenuEl = document.querySelector("#corner-note-menu");
@@ -82,6 +84,7 @@ const state = {
   moves: [],
   notes: new Map(),
   bottomNotes: new Map(),
+  mistakeTiles: new Set(),
   loadingClues: new Set(),
   modalCell: null,
   hiddenClues: new Set(),
@@ -94,6 +97,7 @@ const state = {
   suppressedBottomNoteClick: null,
   pendingClueTap: null,
   shareFeedbackTimer: null,
+  finishCopyFeedbackTimer: null,
   timerStartedAt: null,
   timerCompletedAt: null,
   completionAcknowledged: false,
@@ -223,6 +227,9 @@ function readSavedProgress(seed, boardSize = currentBoardSize()) {
             bottomNoteColors.has(entry[1]),
         )
       : [];
+    const mistakeTiles = Array.isArray(parsed?.mistakeTiles)
+      ? parsed.mistakeTiles.filter((key) => typeof key === "string")
+      : [];
     const timerStartedAt =
       Number.isFinite(parsed?.timerStartedAt) && parsed.timerStartedAt >= 0
         ? parsed.timerStartedAt
@@ -238,6 +245,7 @@ function readSavedProgress(seed, boardSize = currentBoardSize()) {
       hiddenClues,
       notes,
       bottomNotes,
+      mistakeTiles,
       timerStartedAt,
       timerCompletedAt,
       completionAcknowledged,
@@ -263,6 +271,7 @@ function persistProgress() {
   const hiddenClues = [...state.hiddenClues];
   const notes = [...state.notes.entries()];
   const bottomNotes = [...state.bottomNotes.entries()];
+  const mistakeTiles = [...state.mistakeTiles];
   const hasTimerState =
     state.timerStartedAt !== null ||
     state.timerCompletedAt !== null ||
@@ -272,6 +281,7 @@ function persistProgress() {
     hiddenClues.length === 0 &&
     notes.length === 0 &&
     bottomNotes.length === 0 &&
+    mistakeTiles.length === 0 &&
     !hasTimerState
   ) {
     clearSavedProgress(state.currentSeed);
@@ -285,6 +295,7 @@ function persistProgress() {
       hiddenClues,
       notes,
       bottomNotes,
+      mistakeTiles,
       timerStartedAt: state.timerStartedAt,
       timerCompletedAt: state.timerCompletedAt,
       completionAcknowledged: state.completionAcknowledged,
@@ -385,6 +396,52 @@ function formatElapsedDuration(milliseconds) {
   return `${seconds}s`;
 }
 
+function formatResultDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(milliseconds / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function finishGridText() {
+  return state.cells
+    .map((row, rowIndex) =>
+      row
+        .map((_, colIndex) =>
+          state.mistakeTiles.has(guessKey(rowIndex, colIndex)) ? "🟨" : "🟩",
+        )
+        .join(""),
+    )
+    .join("\n");
+}
+
+function finishShareText() {
+  const completedAt = state.timerCompletedAt ?? Date.now();
+  const elapsed = formatResultDuration(completedAt - state.timerStartedAt);
+  return `${elapsed}\n${finishGridText()}\n${window.location.href}`;
+}
+
+function resetFinishCopyButton() {
+  window.clearTimeout(state.finishCopyFeedbackTimer);
+  state.finishCopyFeedbackTimer = null;
+  finishCopyButton.textContent = "Copy Result";
+}
+
+function flashFinishCopyButton(label) {
+  finishCopyButton.textContent = label;
+  window.clearTimeout(state.finishCopyFeedbackTimer);
+  state.finishCopyFeedbackTimer = window.setTimeout(() => {
+    state.finishCopyFeedbackTimer = null;
+    finishCopyButton.textContent = "Copy Result";
+  }, 1200);
+}
+
 function openFinishModal() {
   if (state.timerStartedAt === null) {
     return;
@@ -396,8 +453,10 @@ function openFinishModal() {
   closeErrorModal();
   closeStartModal();
   const completedAt = state.timerCompletedAt ?? Date.now();
-  const elapsed = formatElapsedDuration(completedAt - state.timerStartedAt);
-  finishMessageEl.textContent = `You finished in ${elapsed}.`;
+  const elapsed = formatResultDuration(completedAt - state.timerStartedAt);
+  finishMessageEl.textContent = elapsed;
+  finishGridEl.textContent = finishGridText();
+  resetFinishCopyButton();
   finishModalEl.hidden = false;
 }
 
@@ -521,6 +580,7 @@ async function loadPuzzle(seed, options = {}) {
   state.moves = [];
   state.notes = new Map();
   state.bottomNotes = new Map();
+  state.mistakeTiles = new Set();
   state.loadingClues = new Set();
   state.modalCell = null;
   state.hiddenClues = new Set();
@@ -546,6 +606,7 @@ async function loadPuzzle(seed, options = {}) {
 
   updateUrlPuzzleParams(puzzle.seed, state.boardSize);
   resetShareButton();
+  resetFinishCopyButton();
   closeGuessModal();
   closeConfirmModal();
   closeErrorModal();
@@ -1626,7 +1687,8 @@ async function restoreProgress() {
       saved.moves.length > 0 ||
       saved.hiddenClues.length > 0 ||
       saved.notes.length > 0 ||
-      saved.bottomNotes.length > 0
+      saved.bottomNotes.length > 0 ||
+      saved.mistakeTiles.length > 0
     )
   ) {
     state.timerStartedAt = Date.now();
@@ -1661,6 +1723,12 @@ async function restoreProgress() {
         return Boolean(state.cells[row]?.[col]);
       }),
     );
+    state.mistakeTiles = new Set(
+      saved.mistakeTiles.filter((key) => {
+        const [row, col] = key.split(":").map(Number);
+        return Boolean(state.cells[row]?.[col]);
+      }),
+    );
     if (allTilesMarked()) {
       if (state.timerStartedAt === null) {
         state.timerStartedAt = Date.now();
@@ -1677,6 +1745,7 @@ async function restoreProgress() {
     state.moves = [];
     state.notes = new Map();
     state.bottomNotes = new Map();
+    state.mistakeTiles = new Set();
     state.hiddenClues = new Set();
     state.timerStartedAt = null;
     state.timerCompletedAt = null;
@@ -1836,6 +1905,10 @@ function showGuessError(error) {
   if (error?.status === 400 || error?.status === 409) {
     const { row, col } = state.modalCell ?? {};
     const cell = Number.isInteger(row) && Number.isInteger(col) ? state.cells[row]?.[col] : null;
+    if (Number.isInteger(row) && Number.isInteger(col)) {
+      state.mistakeTiles.add(guessKey(row, col));
+      persistProgress();
+    }
     const detail =
       cell && error?.guess
         ? `${cell.name} can't be logically identified as ${error.guess} from the available info.`
@@ -1889,6 +1962,14 @@ errorDismissButton.addEventListener("click", closeErrorModal);
 startButton.addEventListener("click", startPuzzle);
 finishBackdropEl.addEventListener("click", dismissFinishModal);
 finishDismissButton.addEventListener("click", dismissFinishModal);
+finishCopyButton.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(finishShareText());
+    flashFinishCopyButton("Copied");
+  } catch {
+    flashFinishCopyButton("Failed");
+  }
+});
 scoreDebugEl.addEventListener("click", (event) => {
   if (event.target === scoreDebugEl) {
     toggleScoreDebugOverlay();
