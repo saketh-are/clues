@@ -33,6 +33,9 @@ const noteTapDelayMs = 420;
 const clueTapDelayMs = 260;
 const noteColors = new Set(["yellow", "red", "green"]);
 const invalidMoveMessage = "⚠️ Not enough evidence!";
+const specialNameEmojis = {
+  Coriander: "₍^. .^₎⟆",
+};
 const roleEmojis = {
   Artist: "🧑‍🎨",
   Baker: "👨‍🍳🥖",
@@ -56,6 +59,10 @@ const roleEmojis = {
 
 function emojiForRole(role) {
   return roleEmojis[role] ?? "🧑";
+}
+
+function emojiForCell(cell) {
+  return specialNameEmojis[cell.name] ?? emojiForRole(cell.role);
 }
 
 const rowLabels = ["1", "2", "3", "4", "5"];
@@ -479,7 +486,7 @@ function renderBoard() {
       const note = state.notes.get(key) ?? "none";
 
       positionEl.textContent = `${rowLabels[rowIndex]}${colLabels[colIndex]}`;
-      emojiEl.textContent = emojiForRole(cell.role);
+      emojiEl.textContent = emojiForCell(cell);
       nameEl.textContent = cell.name;
       roleEl.textContent = cell.role.toLowerCase();
       card.classList.add(cell.clue ? "has-clue" : "hidden-clue");
@@ -1329,7 +1336,7 @@ function openGuessModal(row, col) {
   }
 
   state.modalCell = { row, col };
-  guessEmojiEl.textContent = emojiForRole(cell.role);
+  guessEmojiEl.textContent = emojiForCell(cell);
   guessTitleEl.textContent = cell.name;
   guessModalEl.hidden = false;
 }
