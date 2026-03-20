@@ -297,6 +297,25 @@ impl CellSelector {
             | Self::SharedNeighbor { .. } => None,
         }
     }
+
+    fn rename_name_references(&mut self, from: &str, to: &str) {
+        match self {
+            Self::Board | Self::Row { .. } | Self::Col { .. } => {}
+            Self::Neighbor { name } => rename_name(name, from, to),
+            Self::Direction { name, .. } => rename_name(name, from, to),
+            Self::Between {
+                first_name,
+                second_name,
+            }
+            | Self::SharedNeighbor {
+                first_name,
+                second_name,
+            } => {
+                rename_name(first_name, from, to);
+                rename_name(second_name, from, to);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -505,6 +524,12 @@ impl PersonGroup {
             }
         }
     }
+
+    fn rename_name_references(&mut self, from: &str, to: &str) {
+        if let Self::SelectedCells { selector, .. } = self {
+            selector.rename_name_references(from, to);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -545,6 +570,12 @@ impl PersonPredicate {
             Self::Neighboring { name } => {
                 format!("{} neighboring {name}", if singular { "is" } else { "are" },)
             }
+        }
+    }
+
+    fn rename_name_references(&mut self, from: &str, to: &str) {
+        if let Self::Neighboring { name } = self {
+            rename_name(name, from, to);
         }
     }
 }
@@ -754,6 +785,34 @@ impl Clue {
             | Self::LineComparison { .. }
             | Self::Quantified { .. } => None,
         }
+    }
+
+    pub fn rename_name_references(&mut self, from: &str, to: &str) {
+        match self {
+            Self::Nonsense { .. }
+            | Self::Connected { .. }
+            | Self::RoleCount { .. }
+            | Self::RolesComparison { .. }
+            | Self::LineComparison { .. } => {}
+            Self::CountCells { selector, .. } => selector.rename_name_references(from, to),
+            Self::NamedCountCells { name, selector, .. } => {
+                rename_name(name, from, to);
+                selector.rename_name_references(from, to);
+            }
+            Self::DirectRelation { name, .. } => rename_name(name, from, to),
+            Self::Quantified {
+                group, predicate, ..
+            } => {
+                group.rename_name_references(from, to);
+                predicate.rename_name_references(from, to);
+            }
+        }
+    }
+}
+
+fn rename_name(name: &mut String, from: &str, to: &str) {
+    if name == from {
+        *name = to.to_string();
     }
 }
 

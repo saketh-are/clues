@@ -3,6 +3,7 @@ pub mod generator;
 pub mod geometry;
 pub mod puzzle;
 pub mod solver;
+pub mod storage;
 pub mod types;
 
 pub use clue::{
@@ -17,5 +18,9 @@ pub use geometry::{BoardShape, Offset, Position, TOUCHING_NEIGHBOR_OFFSETS};
 pub use puzzle::{Cell, Puzzle, Visibility};
 pub use solver::{
     ClueAnalysis, ForcedAnswer, SolveError, analyze_clues, analyze_puzzle, analyze_revealed_puzzle,
+};
+pub use storage::{
+    RenameStoredCellError, StoredCellV1, StoredPositionV1, StoredPuzzle,
+    StoredPuzzleConversionError, StoredPuzzleV1,
 };
 pub use types::{Answer, NAMES, Name, ROLES, Role};

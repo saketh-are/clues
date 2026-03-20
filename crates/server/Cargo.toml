@@ -7,6 +7,8 @@ edition = "2024"
 axum = "0.8"
 clues-core = { path = "../core" }
 rand = "0.8"
+rocksdb = "0.22"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 tower-http = { version = "0.6", features = ["fs"] }

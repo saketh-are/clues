@@ -9,3 +9,6 @@ name = "clues_core"
 [dependencies]
 rand = "0.8"
 serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0"

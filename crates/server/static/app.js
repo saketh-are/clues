@@ -78,6 +78,7 @@ function emojiForCell(cell) {
 const state = {
   puzzleId: null,
   currentSeed: null,
+  currentStoredPuzzleId: null,
   boardSize: null,
   cells: [],
   guesses: [],
@@ -133,6 +134,20 @@ function seedFromUrl() {
   return normalizeSeed(new URL(window.location.href).searchParams.get("seed"));
 }
 
+function normalizeStoredPuzzleId(value) {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  const normalized = String(value).trim();
+  return normalized.length === 0 ? null : normalized;
+}
+
+function storedPuzzleIdFromUrl() {
+  const match = window.location.pathname.match(/^\/p\/([^/]+)$/);
+  return match ? normalizeStoredPuzzleId(decodeURIComponent(match[1])) : null;
+}
+
 function normalizeDimension(value, fallback) {
   if (value === undefined || value === null || value === "") {
     return fallback;
@@ -160,14 +175,30 @@ function currentBoardSize() {
 
 function updateUrlPuzzleParams(seed, boardSize) {
   const url = new URL(window.location.href);
+  url.pathname = "/";
   url.searchParams.set("seed", String(seed));
   url.searchParams.set("rows", String(boardSize.rows));
   url.searchParams.set("cols", String(boardSize.cols));
   window.history.replaceState({}, "", url);
 }
 
-function progressStorageKey(seed, boardSize = currentBoardSize()) {
-  return `${progressStoragePrefix}${seed}:${boardSize.rows}x${boardSize.cols}`;
+function updateUrlStoredPuzzle(storedPuzzleId) {
+  const url = new URL(window.location.href);
+  url.pathname = `/p/${encodeURIComponent(storedPuzzleId)}`;
+  url.search = "";
+  window.history.replaceState({}, "", url);
+}
+
+function progressStorageKey(boardSize = currentBoardSize()) {
+  if (state.currentStoredPuzzleId !== null) {
+    return `${progressStoragePrefix}stored:${state.currentStoredPuzzleId}`;
+  }
+
+  if (state.currentSeed === null) {
+    return null;
+  }
+
+  return `${progressStoragePrefix}${state.currentSeed}:${boardSize.rows}x${boardSize.cols}`;
 }
 
 function rowLabel(index) {
@@ -186,13 +217,14 @@ function colLabel(index) {
   return label;
 }
 
-function readSavedProgress(seed, boardSize = currentBoardSize()) {
-  if (seed === null) {
+function readSavedProgress(boardSize = currentBoardSize()) {
+  const storageKey = progressStorageKey(boardSize);
+  if (storageKey === null) {
     return null;
   }
 
   try {
-    const raw = window.localStorage.getItem(progressStorageKey(seed, boardSize));
+    const raw = window.localStorage.getItem(storageKey);
     if (!raw) {
       return null;
     }
@@ -255,16 +287,18 @@ function readSavedProgress(seed, boardSize = currentBoardSize()) {
   }
 }
 
-function clearSavedProgress(seed = state.currentSeed, boardSize = currentBoardSize()) {
-  if (seed === null) {
+function clearSavedProgress(boardSize = currentBoardSize()) {
+  const storageKey = progressStorageKey(boardSize);
+  if (storageKey === null) {
     return;
   }
 
-  window.localStorage.removeItem(progressStorageKey(seed, boardSize));
+  window.localStorage.removeItem(storageKey);
 }
 
 function persistProgress() {
-  if (state.currentSeed === null) {
+  const storageKey = progressStorageKey();
+  if (storageKey === null) {
     return;
   }
 
@@ -284,12 +318,12 @@ function persistProgress() {
     mistakeTiles.length === 0 &&
     !hasTimerState
   ) {
-    clearSavedProgress(state.currentSeed);
+    clearSavedProgress();
     return;
   }
 
   window.localStorage.setItem(
-    progressStorageKey(state.currentSeed),
+    storageKey,
     JSON.stringify({
       moves: state.moves,
       hiddenClues,
@@ -544,17 +578,24 @@ function completePuzzleIfNeeded() {
 
 async function loadPuzzle(seed, options = {}) {
   const { forceStartModal = false, suppressStartModal = false } = options;
-  const normalizedSeed = normalizeSeed(seed);
-  const boardSize = options.boardSize ?? currentBoardSize();
-  const params = new URLSearchParams();
-  if (normalizedSeed !== null) {
-    params.set("seed", normalizedSeed);
-  }
-  params.set("rows", String(boardSize.rows));
-  params.set("cols", String(boardSize.cols));
-  const query = `?${params.toString()}`;
+  const storedPuzzleId = normalizeStoredPuzzleId(options.storedPuzzleId);
+  let response;
 
-  const response = await fetch(`/api/puzzles/new${query}`);
+  if (storedPuzzleId !== null) {
+    response = await fetch(`/api/stored-puzzles/${encodeURIComponent(storedPuzzleId)}`);
+  } else {
+    const normalizedSeed = normalizeSeed(seed);
+    const boardSize = options.boardSize ?? currentBoardSize();
+    const params = new URLSearchParams();
+    if (normalizedSeed !== null) {
+      params.set("seed", normalizedSeed);
+    }
+    params.set("rows", String(boardSize.rows));
+    params.set("cols", String(boardSize.cols));
+    const query = `?${params.toString()}`;
+    response = await fetch(`/api/puzzles/new${query}`);
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: "Failed to load puzzle" }));
     throw new Error(error.error || "Failed to load puzzle");
@@ -562,7 +603,8 @@ async function loadPuzzle(seed, options = {}) {
 
   const puzzle = await response.json();
   state.puzzleId = puzzle.id;
-  state.currentSeed = puzzle.seed;
+  state.currentSeed = normalizeSeed(puzzle.seed);
+  state.currentStoredPuzzleId = normalizeStoredPuzzleId(puzzle.stored_puzzle_id);
   state.boardSize = {
     rows: puzzle.rows ?? puzzle.cells.length,
     cols: puzzle.cols ?? puzzle.cells[0]?.length ?? 0,
@@ -604,7 +646,11 @@ async function loadPuzzle(seed, options = {}) {
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
 
-  updateUrlPuzzleParams(puzzle.seed, state.boardSize);
+  if (state.currentStoredPuzzleId !== null) {
+    updateUrlStoredPuzzle(state.currentStoredPuzzleId);
+  } else if (state.currentSeed !== null) {
+    updateUrlPuzzleParams(state.currentSeed, state.boardSize);
+  }
   resetShareButton();
   resetFinishCopyButton();
   closeGuessModal();
@@ -1675,7 +1721,7 @@ function handleClueTap(row, col) {
 }
 
 async function restoreProgress() {
-  const saved = readSavedProgress(state.currentSeed);
+  const saved = readSavedProgress();
   if (!saved) {
     return { restored: false, error: null };
   }
@@ -1752,7 +1798,7 @@ async function restoreProgress() {
     state.timerStartedAt = null;
     state.timerCompletedAt = null;
     state.completionAcknowledged = false;
-    clearSavedProgress(state.currentSeed);
+    clearSavedProgress();
     return {
       restored: false,
       error: "Saved progress could not be restored and was cleared.",
@@ -1811,6 +1857,14 @@ async function clearBoard() {
   closeFinishModal();
 
   if (state.currentSeed === null) {
+    if (state.currentStoredPuzzleId === null) {
+      return;
+    }
+
+    await loadPuzzle(undefined, {
+      storedPuzzleId: state.currentStoredPuzzleId,
+      forceStartModal: true,
+    });
     return;
   }
 
@@ -2049,6 +2103,6 @@ guessCriminalButton.addEventListener("click", async () => {
   }
 });
 
-loadPuzzle(seedFromUrl()).catch((error) => {
+loadPuzzle(seedFromUrl(), { storedPuzzleId: storedPuzzleIdFromUrl() }).catch((error) => {
   openErrorModal(error.message);
 });
