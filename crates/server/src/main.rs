@@ -15,8 +15,9 @@ use axum::{
     routing::{get, post},
 };
 use clues_core::{
-    Answer, ClueScoreTerms, ForcedAnswer, GeneratedPuzzle, Visibility, analyze_revealed_puzzle,
-    generate_puzzle_with_seed,
+    Answer, BoardShape, ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, ForcedAnswer,
+    GeneratedPuzzle, MAX_CELL_COUNT, Visibility, analyze_revealed_puzzle,
+    generate_puzzle_with_seed_and_size,
 };
 use rand::random;
 use serde::{Deserialize, Serialize};
@@ -33,12 +34,16 @@ struct AppState {
 #[derive(Debug, Deserialize)]
 struct NewPuzzleParams {
     seed: Option<String>,
+    rows: Option<u8>,
+    cols: Option<u8>,
 }
 
 #[derive(Debug, Serialize)]
 struct PuzzleResponse {
     id: u64,
     seed: String,
+    rows: u8,
+    cols: u8,
     cells: Vec<Vec<CellResponse>>,
     generated_score_series: Vec<ClueScoreTerms>,
     generated_clue_texts: Vec<String>,
@@ -111,7 +116,8 @@ async fn new_puzzle(
         Some(seed) => parse_seed(&seed)?,
         None => random::<u64>() & SEED_MASK,
     };
-    let generated = generate_puzzle_with_seed(seed)
+    let board = parse_board_shape(params.rows, params.cols)?;
+    let generated = generate_puzzle_with_seed_and_size(seed, board)
         .map_err(|error| AppError::internal(format!("failed to generate puzzle: {error:?}")))?;
     let id = state.next_id.fetch_add(1, Ordering::Relaxed);
     let response = PuzzleResponse::from_generated_puzzle(id, seed, &generated);
@@ -198,6 +204,13 @@ async fn guess_cell(
 
 impl PuzzleResponse {
     fn from_generated_puzzle(id: u64, seed: u64, generated: &GeneratedPuzzle) -> Self {
+        let rows = generated.puzzle.cells.len() as u8;
+        let cols = generated
+            .puzzle
+            .cells
+            .first()
+            .map(|row| row.len())
+            .unwrap_or_default() as u8;
         let cells = generated
             .puzzle
             .cells
@@ -235,11 +248,31 @@ impl PuzzleResponse {
         Self {
             id,
             seed: format_seed(seed),
+            rows,
+            cols,
             cells,
             generated_score_series: generated.generation_score_series.clone(),
             generated_clue_texts: generated.generation_clue_texts.clone(),
         }
     }
+}
+
+fn parse_board_shape(rows: Option<u8>, cols: Option<u8>) -> Result<BoardShape, AppError> {
+    let rows = rows.unwrap_or(DEFAULT_ROWS);
+    let cols = cols.unwrap_or(DEFAULT_COLS);
+
+    if rows == 0 || cols == 0 {
+        return Err(AppError::bad_request("rows and cols must be at least 1"));
+    }
+
+    let cell_count = rows as usize * cols as usize;
+    if cell_count > MAX_CELL_COUNT {
+        return Err(AppError::bad_request(format!(
+            "rows * cols must be at most {MAX_CELL_COUNT}",
+        )));
+    }
+
+    Ok(BoardShape::new(rows, cols))
 }
 
 fn parse_seed(value: &str) -> Result<u64, AppError> {

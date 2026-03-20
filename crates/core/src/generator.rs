@@ -14,8 +14,14 @@ use crate::{
     types::{Answer, NAMES, Name, ROLES, Role},
 };
 
-const ROWS: usize = 5;
-const COLS: usize = 4;
+pub const DEFAULT_ROWS: u8 = 5;
+pub const DEFAULT_COLS: u8 = 4;
+pub const MAX_CELL_COUNT: usize = u32::BITS as usize;
+#[cfg(test)]
+const ROWS: usize = DEFAULT_ROWS as usize;
+#[cfg(test)]
+const COLS: usize = DEFAULT_COLS as usize;
+#[cfg(test)]
 const CELL_COUNT: usize = ROWS * COLS;
 const MIN_ROLE_POOL_SIZE: usize = 10;
 const MAX_ROLE_POOL_SIZE: usize = 15;
@@ -23,7 +29,6 @@ const MAX_PUZZLE_ATTEMPTS: usize = 64;
 const MAX_CLUE_ATTEMPTS: usize = 128;
 const MAX_SCORED_CANDIDATES: usize = 24;
 const CLUE_SCORE_TEMPERATURE: f64 = 0.9;
-const FULL_MASK: u32 = (1u32 << CELL_COUNT) - 1;
 const SID_NAME: &str = "Sid";
 const BAKER_ROLE: &str = "Baker";
 
@@ -58,6 +63,7 @@ pub struct GeneratedPuzzle {
 pub enum GenerateError {
     NotEnoughNames,
     NotEnoughRoles,
+    TooManyCells(usize),
     Solve(SolveError),
     FailedToGenerate,
 }
@@ -70,27 +76,38 @@ impl From<SolveError> for GenerateError {
 
 pub fn generate_puzzle() -> Result<GeneratedPuzzle, GenerateError> {
     let mut rng = rand::thread_rng();
-    generate_puzzle_with_rng(&mut rng)
+    generate_puzzle_with_rng(&mut rng, BoardShape::new(DEFAULT_ROWS, DEFAULT_COLS))
 }
 
 pub fn generate_puzzle_with_seed(seed: u64) -> Result<GeneratedPuzzle, GenerateError> {
+    generate_puzzle_with_seed_and_size(seed, BoardShape::new(DEFAULT_ROWS, DEFAULT_COLS))
+}
+
+pub fn generate_puzzle_with_seed_and_size(
+    seed: u64,
+    board: BoardShape,
+) -> Result<GeneratedPuzzle, GenerateError> {
     let mut rng = StdRng::seed_from_u64(seed);
-    generate_puzzle_with_rng(&mut rng)
+    generate_puzzle_with_rng(&mut rng, board)
 }
 
 pub(crate) fn generate_puzzle_with_rng<R: Rng + ?Sized>(
     rng: &mut R,
+    board: BoardShape,
 ) -> Result<GeneratedPuzzle, GenerateError> {
-    generate_puzzle_with_rng_and_instrumentation(rng, None)
+    generate_puzzle_with_rng_and_instrumentation(rng, board, None)
 }
 
 fn generate_puzzle_with_rng_and_instrumentation<R: Rng + ?Sized>(
     rng: &mut R,
+    board: BoardShape,
     mut instrumentation: Option<&mut GenerationInstrumentation>,
 ) -> Result<GeneratedPuzzle, GenerateError> {
     for _ in 0..MAX_PUZZLE_ATTEMPTS {
         let mut attempt_instrumentation = GenerationInstrumentation::default();
-        if let Some(generated) = try_generate_puzzle(rng, Some(&mut attempt_instrumentation))? {
+        if let Some(generated) =
+            try_generate_puzzle(rng, board, Some(&mut attempt_instrumentation))?
+        {
             if let Some(global) = instrumentation.as_deref_mut() {
                 global.merge(attempt_instrumentation);
             }
@@ -112,14 +129,16 @@ struct Layout {
 
 impl Layout {
     fn from_puzzle(puzzle: &Puzzle, roles: Vec<Role>) -> Self {
-        let board = BoardShape::new(ROWS as u8, COLS as u8);
-        let mut names = Vec::with_capacity(CELL_COUNT);
+        let rows = puzzle.cells.len() as u8;
+        let cols = puzzle.cells.first().map(|row| row.len()).unwrap_or_default() as u8;
+        let board = BoardShape::new(rows, cols);
+        let mut names = Vec::with_capacity(rows as usize * cols as usize);
         let mut positions_by_name = HashMap::new();
         let mut indices_by_role: HashMap<Role, Vec<usize>> = HashMap::new();
 
         for (row_index, row) in puzzle.cells.iter().enumerate() {
             for (col_index, cell) in row.iter().enumerate() {
-                let index = row_index * COLS + col_index;
+                let index = row_index * cols as usize + col_index;
                 let position = Position::new(row_index as i16, col_index as i16);
                 names.push(cell.name.clone());
                 positions_by_name.insert(cell.name.clone(), position);
@@ -144,7 +163,7 @@ impl Layout {
     }
 
     fn index_of_position(&self, position: Position) -> usize {
-        position.row as usize * COLS + position.col as usize
+        position.row as usize * self.board.cols as usize + position.col as usize
     }
 
     fn positions_for_line(&self, line: Line) -> Vec<Position> {
@@ -156,8 +175,11 @@ impl Layout {
 
     fn positions_for_selector(&self, selector: &CellSelector) -> Vec<Position> {
         match selector {
-            CellSelector::Board => (0..ROWS)
-                .flat_map(|row| (0..COLS).map(move |col| Position::new(row as i16, col as i16)))
+            CellSelector::Board => (0..self.board.rows as usize)
+                .flat_map(|row| {
+                    (0..self.board.cols as usize)
+                        .map(move |col| Position::new(row as i16, col as i16))
+                })
                 .collect(),
             CellSelector::Neighbor { name } => {
                 self.board.touching_neighbors(self.position_of_name(name))
@@ -256,11 +278,29 @@ impl GenerationInstrumentation {
     }
 }
 
+fn cell_count(board: BoardShape) -> usize {
+    board.rows as usize * board.cols as usize
+}
+
+fn full_mask_for_cell_count(cell_count: usize) -> u32 {
+    if cell_count >= MAX_CELL_COUNT {
+        u32::MAX
+    } else {
+        (1u32 << cell_count) - 1
+    }
+}
+
 fn try_generate_puzzle<R: Rng + ?Sized>(
     rng: &mut R,
+    board: BoardShape,
     mut instrumentation: Option<&mut GenerationInstrumentation>,
 ) -> Result<Option<GeneratedPuzzle>, GenerateError> {
-    if NAMES.len() < CELL_COUNT {
+    let cell_count = cell_count(board);
+    if cell_count > MAX_CELL_COUNT {
+        return Err(GenerateError::TooManyCells(cell_count));
+    }
+
+    if NAMES.len() < cell_count {
         return Err(GenerateError::NotEnoughNames);
     }
 
@@ -268,9 +308,9 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         return Err(GenerateError::NotEnoughRoles);
     }
 
-    let names = sample_names(rng);
-    let roles = sample_roles(rng, &names)?;
-    let mut puzzle = empty_puzzle(&names, &roles);
+    let names = sample_names(rng, cell_count);
+    let roles = sample_roles(rng, &names, cell_count)?;
+    let mut puzzle = empty_puzzle(board, &names, &roles);
     let layout = Layout::from_puzzle(
         &puzzle,
         distinct_roles(
@@ -283,17 +323,18 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         ),
     );
 
-    let first_index = rng.gen_range(0..CELL_COUNT);
+    let first_index = rng.gen_range(0..cell_count);
     let first_answer = random_answer(rng);
 
-    let mut clues = vec![None; CELL_COUNT];
-    let mut clue_score_terms = vec![None; CELL_COUNT];
-    let mut generation_score_series = Vec::with_capacity(CELL_COUNT);
-    let mut generation_clue_texts = Vec::with_capacity(CELL_COUNT);
-    let mut answers = vec![None; CELL_COUNT];
+    let mut clues = vec![None; cell_count];
+    let mut clue_score_terms = vec![None; cell_count];
+    let mut generation_score_series = Vec::with_capacity(cell_count);
+    let mut generation_clue_texts = Vec::with_capacity(cell_count);
+    let mut answers = vec![None; cell_count];
     let mut known_mask = 0u32;
     let mut known_innocent_mask = 0u32;
     let mut pending = vec![first_index];
+    let full_mask = full_mask_for_cell_count(cell_count);
 
     reveal_answer(
         &mut answers,
@@ -385,7 +426,7 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 continue;
             }
 
-            if closed_known_mask != FULL_MASK && forced_unknown.is_empty() {
+            if closed_known_mask != full_mask && forced_unknown.is_empty() {
                 continue;
             }
 
@@ -500,7 +541,7 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
             None,
         );
 
-        if known_mask == FULL_MASK {
+        if known_mask == full_mask {
             continue;
         }
 
@@ -509,13 +550,13 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         }
     }
 
-    if known_mask != FULL_MASK || clues.iter().any(Option::is_none) {
+    if known_mask != full_mask || clues.iter().any(Option::is_none) {
         return Ok(None);
     }
 
-    for row in 0..ROWS {
-        for col in 0..COLS {
-            let index = row * COLS + col;
+    for row in 0..board.rows as usize {
+        for col in 0..board.cols as usize {
+            let index = row * board.cols as usize + col;
             puzzle.cells[row][col].clue = clues[index].clone().unwrap();
             puzzle.cells[row][col].answer = answers[index].unwrap();
             puzzle.cells[row][col].state = if index == first_index {
@@ -527,14 +568,15 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     }
 
     Ok(Some(GeneratedPuzzle {
-        first_revealed_name: puzzle.cells[first_index / COLS][first_index % COLS]
+        first_revealed_name: puzzle.cells[first_index / board.cols as usize]
+            [first_index % board.cols as usize]
             .name
             .clone(),
         first_revealed_answer: first_answer,
-        clue_score_terms: (0..ROWS)
+        clue_score_terms: (0..board.rows as usize)
             .map(|row| {
-                (0..COLS)
-                    .map(|col| clue_score_terms[row * COLS + col].clone().unwrap())
+                (0..board.cols as usize)
+                    .map(|col| clue_score_terms[row * board.cols as usize + col].clone().unwrap())
                     .collect()
             })
             .collect(),
@@ -544,18 +586,22 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     }))
 }
 
-fn sample_names<R: Rng + ?Sized>(rng: &mut R) -> Vec<Name> {
+fn sample_names<R: Rng + ?Sized>(rng: &mut R, cell_count: usize) -> Vec<Name> {
     let mut names = NAMES
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
     names.shuffle(rng);
-    names.truncate(CELL_COUNT);
+    names.truncate(cell_count);
     names.sort_unstable();
     names
 }
 
-fn sample_roles<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Result<Vec<Role>, GenerateError> {
+fn sample_roles<R: Rng + ?Sized>(
+    rng: &mut R,
+    names: &[Name],
+    cell_count: usize,
+) -> Result<Vec<Role>, GenerateError> {
     let mut roles = ROLES
         .iter()
         .map(|role| (*role).to_string())
@@ -577,7 +623,7 @@ fn sample_roles<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Result<Vec<Role
 
     let mut assigned_roles = role_pool.clone();
 
-    while assigned_roles.len() < CELL_COUNT {
+    while assigned_roles.len() < cell_count {
         assigned_roles.push(role_pool.choose(rng).unwrap().clone());
     }
 
@@ -602,12 +648,12 @@ fn distinct_roles(roles: &[Role]) -> Vec<Role> {
     distinct
 }
 
-fn empty_puzzle(names: &[Name], roles: &[Role]) -> Puzzle {
-    let cells = (0..ROWS)
+fn empty_puzzle(board: BoardShape, names: &[Name], roles: &[Role]) -> Puzzle {
+    let cells = (0..board.rows as usize)
         .map(|row| {
-            (0..COLS)
+            (0..board.cols as usize)
                 .map(|col| {
-                    let index = row * COLS + col;
+                    let index = row * board.cols as usize + col;
                     let role = if names[index] == SID_NAME {
                         BAKER_ROLE.to_string()
                     } else {
@@ -655,10 +701,16 @@ fn closure_known_masks_from_analysis(
     known_mask: u32,
     known_innocent_mask: u32,
 ) -> (u32, u32) {
+    let cell_count = analysis
+        .forced_answers
+        .first()
+        .map(|row| row.len())
+        .unwrap_or_default()
+        * analysis.forced_answers.len();
     let mut closed_known_mask = known_mask;
     let mut closed_known_innocent_mask = known_innocent_mask & known_mask;
 
-    for index in 0..CELL_COUNT {
+    for index in 0..cell_count {
         let bit = 1u32 << index;
         if known_mask & bit != 0 {
             continue;
@@ -691,8 +743,9 @@ fn enqueue_forced_closure_indices<R: Rng + ?Sized>(
     exclude_index: Option<usize>,
 ) {
     let mut promoted = Vec::new();
+    let cell_count = answers.len();
 
-    for index in 0..CELL_COUNT {
+    for index in 0..cell_count {
         if Some(index) == exclude_index || clues[index].is_some() {
             continue;
         }
@@ -752,7 +805,7 @@ fn sample_named_count_cells_clue<R: Rng + ?Sized>(
             continue;
         }
 
-        let filter = sample_filter_for_selector(rng, &selector);
+        let filter = sample_filter_for_selector(rng, layout, &selector);
         let positions = if filter == CellFilter::Any {
             all_positions.clone()
         } else {
@@ -807,7 +860,7 @@ fn sample_count_cells_clue<R: Rng + ?Sized>(
             continue;
         }
 
-        let filter = sample_filter_for_selector(rng, &selector);
+        let filter = sample_filter_for_selector(rng, layout, &selector);
         let positions = if filter == CellFilter::Any {
             all_positions.clone()
         } else {
@@ -931,14 +984,11 @@ fn sample_line_comparison_clue<R: Rng + ?Sized>(
 ) -> Option<Clue> {
     let compare_rows = rng.gen_bool(0.5);
     let lines = if compare_rows {
-        (0..ROWS as u8).map(Line::Row).collect::<Vec<_>>()
+        (0..layout.board.rows).map(Line::Row).collect::<Vec<_>>()
     } else {
-        vec![
-            Line::Col(Column::A),
-            Line::Col(Column::B),
-            Line::Col(Column::C),
-            Line::Col(Column::D),
-        ]
+        (0..layout.board.cols)
+            .map(|index| Line::Col(Column::new(index)))
+            .collect::<Vec<_>>()
     };
     let first_line = *lines.choose(rng)?;
     let second_line = **lines
@@ -977,10 +1027,10 @@ fn sample_selector<R: Rng + ?Sized>(rng: &mut R, layout: &Layout) -> Option<Cell
             direction: random_direction(rng),
         },
         3 => CellSelector::Row {
-            row: rng.gen_range(0..ROWS as u8),
+            row: rng.gen_range(0..layout.board.rows),
         },
         4 => CellSelector::Col {
-            col: random_column(rng),
+            col: random_column(rng, layout.board.cols),
         },
         5 => {
             let (first_name, second_name) = random_distinct_names(rng, &layout.names)?;
@@ -1000,7 +1050,11 @@ fn sample_selector<R: Rng + ?Sized>(rng: &mut R, layout: &Layout) -> Option<Cell
     })
 }
 
-fn sample_filter_for_selector<R: Rng + ?Sized>(rng: &mut R, selector: &CellSelector) -> CellFilter {
+fn sample_filter_for_selector<R: Rng + ?Sized>(
+    rng: &mut R,
+    layout: &Layout,
+    selector: &CellSelector,
+) -> CellFilter {
     if matches!(selector, CellSelector::Direction { .. }) {
         return CellFilter::Any;
     }
@@ -1009,8 +1063,8 @@ fn sample_filter_for_selector<R: Rng + ?Sized>(rng: &mut R, selector: &CellSelec
         0 => CellFilter::Any,
         1 => CellFilter::Edge,
         2 => CellFilter::Corner,
-        3 => CellFilter::Line(Line::Row(rng.gen_range(0..ROWS as u8))),
-        _ => CellFilter::Line(Line::Col(random_column(rng))),
+        3 => CellFilter::Line(Line::Row(rng.gen_range(0..layout.board.rows))),
+        _ => CellFilter::Line(Line::Col(random_column(rng, layout.board.cols))),
     }
 }
 
@@ -1032,7 +1086,9 @@ fn sample_witness_assignment<R: Rng + ?Sized>(
     known_mask: u32,
 ) -> Option<u32> {
     let partial = *solution.assignments.choose(rng)?;
-    let free_mask = FULL_MASK & !known_mask & !solution.variable_mask;
+    let cell_count = solution.analysis.forced_answers.len()
+        * solution.analysis.forced_answers.first().map(|row| row.len()).unwrap_or_default();
+    let free_mask = full_mask_for_cell_count(cell_count) & !known_mask & !solution.variable_mask;
 
     Some(partial | (rng.r#gen::<u32>() & free_mask))
 }
@@ -1084,7 +1140,15 @@ fn random_nonsense_clue<R: Rng + ?Sized>(rng: &mut R, answer: Answer) -> Clue {
 
 fn remaining_possibility_count(solution: &crate::solver::SolutionSet, known_mask: u32) -> u64 {
     let free_unknown_bits =
-        CELL_COUNT as u32 - known_mask.count_ones() - solution.variable_mask.count_ones();
+        solution.analysis.forced_answers.len() as u32
+            * solution
+                .analysis
+                .forced_answers
+                .first()
+                .map(|row| row.len())
+                .unwrap_or_default() as u32
+            - known_mask.count_ones()
+            - solution.variable_mask.count_ones();
 
     (solution.assignments.len() as u64) * (1u64 << free_unknown_bits)
 }
@@ -1265,8 +1329,17 @@ fn synergy_bonus(synergy_gain: f64, combination_size: usize, standalone_forced: 
     }
 }
 
+fn analysis_cell_count(analysis: &crate::solver::ClueAnalysis) -> usize {
+    analysis.forced_answers.len()
+        * analysis
+            .forced_answers
+            .first()
+            .map(|row| row.len())
+            .unwrap_or_default()
+}
+
 fn active_unforced_tile_count(solution: &SolutionSet, known_mask: u32) -> usize {
-    (0..CELL_COUNT)
+    (0..analysis_cell_count(&solution.analysis))
         .filter(|index| solution.implicated_mask & (1u32 << index) != 0)
         .filter(|index| known_mask & (1u32 << index) == 0)
         .filter(|index| forced_answer_at(&solution.analysis, *index) == ForcedAnswer::Neither)
@@ -1280,7 +1353,7 @@ fn active_uncertainty(solution: &SolutionSet, known_mask: u32) -> f64 {
 
     let assignment_count = solution.assignments.len() as f64;
 
-    (0..CELL_COUNT)
+    (0..analysis_cell_count(&solution.analysis))
         .filter(|index| solution.implicated_mask & (1u32 << index) != 0)
         .filter(|index| solution.variable_mask & (1u32 << index) != 0)
         .filter(|index| known_mask & (1u32 << index) == 0)
@@ -1471,7 +1544,7 @@ fn newly_forced_unknown_indices(
     next: &crate::solver::ClueAnalysis,
     known_mask: u32,
 ) -> Vec<usize> {
-    (0..CELL_COUNT)
+    (0..analysis_cell_count(next))
         .filter(|index| known_mask & (1u32 << index) == 0)
         .filter(|index| forced_answer_at(baseline, *index) == ForcedAnswer::Neither)
         .filter(|index| forced_answer_at(next, *index) != ForcedAnswer::Neither)
@@ -1479,20 +1552,26 @@ fn newly_forced_unknown_indices(
 }
 
 fn forced_unknown_indices(analysis: &crate::solver::ClueAnalysis, known_mask: u32) -> Vec<usize> {
-    (0..CELL_COUNT)
+    (0..analysis_cell_count(analysis))
         .filter(|index| known_mask & (1u32 << index) == 0)
         .filter(|index| forced_answer_at(analysis, *index) != ForcedAnswer::Neither)
         .collect()
 }
 
 fn has_unforced_unknown(analysis: &crate::solver::ClueAnalysis, known_mask: u32) -> bool {
-    (0..CELL_COUNT)
+    (0..analysis_cell_count(analysis))
         .filter(|index| known_mask & (1u32 << index) == 0)
         .any(|index| forced_answer_at(analysis, index) == ForcedAnswer::Neither)
 }
 
 fn forced_answer_at(analysis: &crate::solver::ClueAnalysis, index: usize) -> ForcedAnswer {
-    analysis.forced_answers[index / COLS][index % COLS]
+    let cols = analysis
+        .forced_answers
+        .first()
+        .map(|row| row.len())
+        .unwrap_or_default();
+
+    analysis.forced_answers[index / cols][index % cols]
 }
 
 fn forced_answer_as_answer(forced: ForcedAnswer) -> Option<Answer> {
@@ -1538,13 +1617,8 @@ fn random_direction<R: Rng + ?Sized>(rng: &mut R) -> Direction {
     }
 }
 
-fn random_column<R: Rng + ?Sized>(rng: &mut R) -> Column {
-    match rng.gen_range(0..4) {
-        0 => Column::A,
-        1 => Column::B,
-        2 => Column::C,
-        _ => Column::D,
-    }
+fn random_column<R: Rng + ?Sized>(rng: &mut R, cols: u8) -> Column {
+    Column::new(rng.gen_range(0..cols))
 }
 
 fn random_distinct_names<R: Rng + ?Sized>(rng: &mut R, names: &[Name]) -> Option<(Name, Name)> {
@@ -1575,7 +1649,7 @@ mod tests {
             CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Column, Count, Line,
             NONSENSE_TEXTS, Parity,
         },
-        geometry::Position,
+        geometry::{BoardShape, Position},
         solver::{ClueAnalysis, SolutionSet, solve_clues_with_known_mask},
         types::NAMES,
     };
@@ -1602,7 +1676,8 @@ mod tests {
     #[test]
     fn generated_puzzle_is_fully_forced_from_the_first_reveal() {
         let mut rng = StdRng::seed_from_u64(7);
-        let generated = generate_puzzle_with_rng(&mut rng).unwrap();
+        let generated = generate_puzzle_with_rng(&mut rng, BoardShape::new(ROWS as u8, COLS as u8))
+            .unwrap();
         let clues = generated
             .puzzle
             .cells
@@ -1648,7 +1723,8 @@ mod tests {
     #[test]
     fn generated_puzzle_uses_between_ten_and_fifteen_roles() {
         let mut rng = StdRng::seed_from_u64(7);
-        let generated = generate_puzzle_with_rng(&mut rng).unwrap();
+        let generated = generate_puzzle_with_rng(&mut rng, BoardShape::new(ROWS as u8, COLS as u8))
+            .unwrap();
         let roles = generated
             .puzzle
             .cells
@@ -1669,7 +1745,7 @@ mod tests {
             .collect::<Vec<_>>();
         names[6] = SID_NAME.to_string();
 
-        let roles = sample_roles(&mut rng, &names).unwrap();
+        let roles = sample_roles(&mut rng, &names, CELL_COUNT).unwrap();
 
         assert_eq!(roles[6], BAKER_ROLE);
         assert!((10..=15).contains(&distinct_roles(&roles).len()));
@@ -1690,9 +1766,20 @@ mod tests {
     }
 
     #[test]
+    fn generated_puzzle_supports_2x2_board_size() {
+        let generated =
+            super::generate_puzzle_with_seed_and_size(7, BoardShape::new(2, 2)).unwrap();
+
+        assert_eq!(generated.puzzle.cells.len(), 2);
+        assert_eq!(generated.puzzle.cells[0].len(), 2);
+        assert_eq!(generated.clue_score_terms.len(), 2);
+        assert_eq!(generated.clue_score_terms[0].len(), 2);
+    }
+
+    #[test]
     fn generator_returns_a_meaningful_error_when_it_cannot_make_progress() {
         let mut rng = StdRng::seed_from_u64(1);
-        let result = generate_puzzle_with_rng(&mut rng);
+        let result = generate_puzzle_with_rng(&mut rng, BoardShape::new(ROWS as u8, COLS as u8));
 
         assert!(!matches!(result, Err(GenerateError::NotEnoughNames)));
     }
@@ -1872,6 +1959,15 @@ mod tests {
     #[test]
     fn direction_selectors_only_sample_any_filter() {
         let mut rng = StdRng::seed_from_u64(7);
+        let names = NAMES[..CELL_COUNT]
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        let roles = (0..CELL_COUNT)
+            .map(|index| format!("Role {}", index % 4))
+            .collect::<Vec<_>>();
+        let puzzle = empty_puzzle(BoardShape::new(ROWS as u8, COLS as u8), &names, &roles);
+        let layout = Layout::from_puzzle(&puzzle, distinct_roles(&roles));
         let selector = CellSelector::Direction {
             name: "Anna".to_string(),
             direction: crate::clue::Direction::Left,
@@ -1879,7 +1975,7 @@ mod tests {
 
         for _ in 0..32 {
             assert_eq!(
-                sample_filter_for_selector(&mut rng, &selector),
+                sample_filter_for_selector(&mut rng, &layout, &selector),
                 CellFilter::Any
             );
         }
@@ -1931,7 +2027,7 @@ mod tests {
         let roles = (0..CELL_COUNT)
             .map(|index| format!("Role {}", index % 4))
             .collect::<Vec<_>>();
-        let puzzle = empty_puzzle(&names, &roles);
+        let puzzle = empty_puzzle(BoardShape::new(ROWS as u8, COLS as u8), &names, &roles);
         let layout = Layout::from_puzzle(&puzzle, distinct_roles(&roles));
 
         for _ in 0..128 {
@@ -1999,7 +2095,7 @@ mod tests {
         let roles = (0..CELL_COUNT)
             .map(|_| "Role".to_string())
             .collect::<Vec<_>>();
-        let puzzle = empty_puzzle(&names, &roles);
+        let puzzle = empty_puzzle(BoardShape::new(ROWS as u8, COLS as u8), &names, &roles);
         let anchor_name = puzzle.cells[0][1].name.clone();
         let clues = vec![
             Clue::DirectRelation {
@@ -2037,7 +2133,7 @@ mod tests {
         let roles = (0..CELL_COUNT)
             .map(|_| "Role".to_string())
             .collect::<Vec<_>>();
-        let puzzle = empty_puzzle(&names, &roles);
+        let puzzle = empty_puzzle(BoardShape::new(ROWS as u8, COLS as u8), &names, &roles);
         let corner_parity = Clue::CountCells {
             selector: CellSelector::Col { col: Column::A },
             answer: crate::types::Answer::Criminal,
@@ -2106,7 +2202,12 @@ mod tests {
 
         for seed in 0..puzzle_count as u64 {
             let mut rng = StdRng::seed_from_u64(seed);
-            generate_puzzle_with_rng_and_instrumentation(&mut rng, Some(&mut stats)).unwrap();
+            generate_puzzle_with_rng_and_instrumentation(
+                &mut rng,
+                BoardShape::new(ROWS as u8, COLS as u8),
+                Some(&mut stats),
+            )
+            .unwrap();
         }
 
         let candidate_histogram = histogram(&stats.candidate_combination_sizes);

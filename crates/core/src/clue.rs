@@ -104,34 +104,50 @@ impl fmt::Display for Direction {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Column {
-    A,
-    B,
-    C,
-    D,
-}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Column(u8);
 
 impl Column {
+    pub const A: Self = Self(0);
+    pub const B: Self = Self(1);
+    pub const C: Self = Self(2);
+    pub const D: Self = Self(3);
+
+    pub const fn new(index: u8) -> Self {
+        Self(index)
+    }
+
     pub const fn index(self) -> u8 {
-        match self {
-            Self::A => 0,
-            Self::B => 1,
-            Self::C => 2,
-            Self::D => 3,
-        }
+        self.0
+    }
+
+    pub fn label(self) -> String {
+        column_label(self.0)
     }
 }
 
 impl fmt::Display for Column {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::A => f.write_str("A"),
-            Self::B => f.write_str("B"),
-            Self::C => f.write_str("C"),
-            Self::D => f.write_str("D"),
-        }
+        f.write_str(&self.label())
     }
+}
+
+pub fn column_label(index: u8) -> String {
+    let mut value = index as usize;
+    let mut label = String::new();
+
+    loop {
+        let remainder = value % 26;
+        label.insert(0, (b'A' + remainder as u8) as char);
+
+        if value < 26 {
+            break;
+        }
+
+        value = value / 26 - 1;
+    }
+
+    label
 }
 
 const fn display_row(row: u8) -> u8 {

@@ -11,7 +11,7 @@ use crate::{
 };
 
 type BitMask = u32;
-const CELL_COUNT: usize = 20;
+const MAX_CELL_COUNT: usize = BitMask::BITS as usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ForcedAnswer {
@@ -37,7 +37,7 @@ pub(crate) struct SolutionSet {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SolveError {
     RaggedBoard,
-    WrongCellCount(usize),
+    TooManyCells(usize),
     DuplicateName(Name),
     MissingName(Name),
     InvalidRow(u8),
@@ -84,7 +84,7 @@ enum CompiledGroup {
 #[derive(Debug, Clone)]
 enum CompiledPredicate {
     Count {
-        masks_by_origin: [BitMask; CELL_COUNT],
+        masks_by_origin: Vec<BitMask>,
         answer: Answer,
         count: Count,
     },
@@ -96,14 +96,15 @@ enum CompiledPredicate {
 #[derive(Debug, Clone)]
 struct CompileContext {
     board: BoardShape,
+    cell_count: usize,
     cols: u8,
     full_mask: BitMask,
     edge_mask: BitMask,
     corner_mask: BitMask,
     names: HashMap<Name, usize>,
     role_masks: HashMap<Role, BitMask>,
-    orthogonal_masks: [BitMask; CELL_COUNT],
-    positions: [Position; CELL_COUNT],
+    orthogonal_masks: Vec<BitMask>,
+    positions: Vec<Position>,
 }
 
 pub fn analyze_puzzle(puzzle: &Puzzle) -> Result<ClueAnalysis, SolveError> {
@@ -153,7 +154,7 @@ pub(crate) fn solve_clues_with_known_mask(
         .iter()
         .fold(0, |mask, clue| mask | context.implicated_mask(clue));
     let variable_mask = implicated_mask & !known_mask;
-    let variable_bits = (0..CELL_COUNT)
+    let variable_bits = (0..context.cell_count)
         .map(|index| 1u32 << index)
         .filter(|bit| variable_mask & bit != 0)
         .collect::<Vec<_>>();
@@ -299,13 +300,17 @@ impl CompileContext {
         }
 
         let cell_count = rows * cols;
-        if cell_count != CELL_COUNT {
-            return Err(SolveError::WrongCellCount(cell_count));
+        if cell_count > MAX_CELL_COUNT {
+            return Err(SolveError::TooManyCells(cell_count));
         }
 
         let board = BoardShape::new(rows as u8, cols as u8);
-        let full_mask = (1u32 << CELL_COUNT) - 1;
-        let mut positions = [Position::new(0, 0); CELL_COUNT];
+        let full_mask = if cell_count == MAX_CELL_COUNT {
+            BitMask::MAX
+        } else {
+            (1u32 << cell_count) - 1
+        };
+        let mut positions = vec![Position::new(0, 0); cell_count];
         let mut names = HashMap::new();
         let mut role_masks: HashMap<Role, BitMask> = HashMap::new();
         let mut edge_mask = 0;
@@ -336,7 +341,7 @@ impl CompileContext {
             }
         }
 
-        let mut orthogonal_masks = [0; CELL_COUNT];
+        let mut orthogonal_masks = vec![0; cell_count];
         for (index, position) in positions.iter().enumerate() {
             orthogonal_masks[index] =
                 Self::positions_to_mask(&board.orthogonal_neighbors(*position), cols);
@@ -344,6 +349,7 @@ impl CompileContext {
 
         Ok(Self {
             board,
+            cell_count,
             cols: cols as u8,
             full_mask,
             edge_mask,
@@ -465,7 +471,7 @@ impl CompileContext {
         &self,
         predicate: &PersonPredicate,
     ) -> Result<CompiledPredicate, SolveError> {
-        let mut masks_by_origin = [0; CELL_COUNT];
+        let mut masks_by_origin = vec![0; self.cell_count];
 
         match predicate {
             PersonPredicate::Neighbor {
@@ -559,7 +565,7 @@ impl CompileContext {
                 predicate,
                 quantifier,
             } => {
-                let matching_people = (0..CELL_COUNT)
+                let matching_people = (0..self.cell_count)
                     .filter(|index| self.group_contains(assignment, group, *index))
                     .filter(|index| self.predicate_matches(assignment, predicate, *index))
                     .count() as i32;
@@ -734,7 +740,7 @@ impl CompileContext {
         match predicate {
             CompiledPredicate::Count {
                 masks_by_origin, ..
-            } => (0..CELL_COUNT)
+            } => (0..self.cell_count)
                 .filter(|index| candidate_mask & (1u32 << index) != 0)
                 .fold(0, |mask, index| mask | masks_by_origin[index]),
             CompiledPredicate::Structural { matching_origins } => *matching_origins,
@@ -844,6 +850,34 @@ mod tests {
         Puzzle { cells }
     }
 
+    fn small_test_puzzle() -> Puzzle {
+        let dummy_clue = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Innocent,
+            count: Count::AtLeast(0),
+            filter: CellFilter::Any,
+        };
+
+        let cells = (0..2)
+            .map(|row| {
+                (0..2)
+                    .map(|col| {
+                        let index = row * 2 + col;
+                        Cell {
+                            name: NAMES[index].to_string(),
+                            role: "Role".to_string(),
+                            clue: dummy_clue.clone(),
+                            answer: Answer::Innocent,
+                            state: Visibility::Hidden,
+                        }
+                    })
+                    .collect()
+            })
+            .collect();
+
+        Puzzle { cells }
+    }
+
     fn forced_at(analysis: &ClueAnalysis, row: usize, col: usize) -> ForcedAnswer {
         analysis.forced_answers[row][col]
     }
@@ -855,6 +889,28 @@ mod tests {
             selector: CellSelector::Board,
             answer: Answer::Innocent,
             count: Count::Number(20),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert!(
+            analysis
+                .forced_answers
+                .iter()
+                .flatten()
+                .all(|forced| *forced == ForcedAnswer::Innocent)
+        );
+    }
+
+    #[test]
+    fn board_wide_innocent_count_supports_non_default_board_size() {
+        let puzzle = small_test_puzzle();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Innocent,
+            count: Count::Number(4),
             filter: CellFilter::Any,
         }];
 

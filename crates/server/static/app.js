@@ -40,6 +40,7 @@ const noteColors = ["yellow", "red", "green", "orange", "magenta", "cyan"];
 const topNoteColors = new Set(noteColors);
 const bottomNoteColors = new Set(noteColors);
 const invalidMoveMessage = "⚠️ Not enough evidence!";
+const defaultBoardSize = { rows: 5, cols: 4 };
 const specialNameEmojis = {
   Coriander: "₍^. .^₎⟆",
 };
@@ -72,12 +73,10 @@ function emojiForCell(cell) {
   return specialNameEmojis[cell.name] ?? emojiForRole(cell.role);
 }
 
-const rowLabels = ["1", "2", "3", "4", "5"];
-const colLabels = ["A", "B", "C", "D"];
-
 const state = {
   puzzleId: null,
   currentSeed: null,
+  boardSize: null,
   cells: [],
   guesses: [],
   moves: [],
@@ -130,23 +129,66 @@ function seedFromUrl() {
   return normalizeSeed(new URL(window.location.href).searchParams.get("seed"));
 }
 
-function updateUrlSeed(seed) {
+function normalizeDimension(value, fallback) {
+  if (value === undefined || value === null || value === "") {
+    return fallback;
+  }
+
+  const normalized = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(normalized) || normalized <= 0) {
+    return fallback;
+  }
+
+  return normalized;
+}
+
+function boardSizeFromUrl() {
+  const url = new URL(window.location.href);
+  return {
+    rows: normalizeDimension(url.searchParams.get("rows"), defaultBoardSize.rows),
+    cols: normalizeDimension(url.searchParams.get("cols"), defaultBoardSize.cols),
+  };
+}
+
+function currentBoardSize() {
+  return state.boardSize ?? boardSizeFromUrl();
+}
+
+function updateUrlPuzzleParams(seed, boardSize) {
   const url = new URL(window.location.href);
   url.searchParams.set("seed", String(seed));
+  url.searchParams.set("rows", String(boardSize.rows));
+  url.searchParams.set("cols", String(boardSize.cols));
   window.history.replaceState({}, "", url);
 }
 
-function progressStorageKey(seed) {
-  return `${progressStoragePrefix}${seed}`;
+function progressStorageKey(seed, boardSize = currentBoardSize()) {
+  return `${progressStoragePrefix}${seed}:${boardSize.rows}x${boardSize.cols}`;
 }
 
-function readSavedProgress(seed) {
+function rowLabel(index) {
+  return String(index + 1);
+}
+
+function colLabel(index) {
+  let value = index;
+  let label = "";
+
+  while (value >= 0) {
+    label = String.fromCharCode(65 + (value % 26)) + label;
+    value = Math.floor(value / 26) - 1;
+  }
+
+  return label;
+}
+
+function readSavedProgress(seed, boardSize = currentBoardSize()) {
   if (seed === null) {
     return null;
   }
 
   try {
-    const raw = window.localStorage.getItem(progressStorageKey(seed));
+    const raw = window.localStorage.getItem(progressStorageKey(seed, boardSize));
     if (!raw) {
       return null;
     }
@@ -205,12 +247,12 @@ function readSavedProgress(seed) {
   }
 }
 
-function clearSavedProgress(seed = state.currentSeed) {
+function clearSavedProgress(seed = state.currentSeed, boardSize = currentBoardSize()) {
   if (seed === null) {
     return;
   }
 
-  window.localStorage.removeItem(progressStorageKey(seed));
+  window.localStorage.removeItem(progressStorageKey(seed, boardSize));
 }
 
 function persistProgress() {
@@ -444,7 +486,14 @@ function completePuzzleIfNeeded() {
 async function loadPuzzle(seed, options = {}) {
   const { forceStartModal = false, suppressStartModal = false } = options;
   const normalizedSeed = normalizeSeed(seed);
-  const query = normalizedSeed === null ? "" : `?seed=${encodeURIComponent(normalizedSeed)}`;
+  const boardSize = options.boardSize ?? currentBoardSize();
+  const params = new URLSearchParams();
+  if (normalizedSeed !== null) {
+    params.set("seed", normalizedSeed);
+  }
+  params.set("rows", String(boardSize.rows));
+  params.set("cols", String(boardSize.cols));
+  const query = `?${params.toString()}`;
 
   const response = await fetch(`/api/puzzles/new${query}`);
   if (!response.ok) {
@@ -455,6 +504,10 @@ async function loadPuzzle(seed, options = {}) {
   const puzzle = await response.json();
   state.puzzleId = puzzle.id;
   state.currentSeed = puzzle.seed;
+  state.boardSize = {
+    rows: puzzle.rows ?? puzzle.cells.length,
+    cols: puzzle.cols ?? puzzle.cells[0]?.length ?? 0,
+  };
   state.cells = puzzle.cells;
   state.generatedScoreSeries = Array.isArray(puzzle.generated_score_series)
     ? puzzle.generated_score_series
@@ -491,7 +544,7 @@ async function loadPuzzle(seed, options = {}) {
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
 
-  updateUrlSeed(puzzle.seed);
+  updateUrlPuzzleParams(puzzle.seed, state.boardSize);
   resetShareButton();
   closeGuessModal();
   closeConfirmModal();
@@ -518,6 +571,9 @@ async function loadPuzzle(seed, options = {}) {
 
 function renderBoard() {
   boardEl.innerHTML = "";
+  const boardSize = currentBoardSize();
+  boardEl.style.setProperty("--rows", String(boardSize.rows));
+  boardEl.style.setProperty("--cols", String(boardSize.cols));
 
   state.cells.forEach((row, rowIndex) => {
     row.forEach((cell, colIndex) => {
@@ -536,7 +592,7 @@ function renderBoard() {
       const note = state.notes.get(key) ?? "none";
       const bottomNote = state.bottomNotes.get(key) ?? "none";
 
-      positionEl.textContent = `${rowLabels[rowIndex]}${colLabels[colIndex]}`;
+      positionEl.textContent = `${rowLabel(rowIndex)}${colLabel(colIndex)}`;
       emojiEl.textContent = emojiForCell(cell);
       nameEl.textContent = cell.name;
       roleEl.textContent = cell.role.toLowerCase();
