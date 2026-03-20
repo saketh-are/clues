@@ -1,13 +1,4 @@
-use std::{
-    collections::HashMap,
-    fs,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-};
+use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
@@ -18,7 +9,7 @@ use axum::{
 };
 use clues_core::{
     Answer, BoardShape, ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, ForcedAnswer, GeneratedPuzzle,
-    Puzzle, StoredPuzzle, StoredPuzzleConversionError, Visibility, analyze_revealed_puzzle,
+    Puzzle, PuzzleValidationError, StoredPuzzle, Visibility, analyze_revealed_puzzle,
     generate_puzzle_with_seed_and_size,
 };
 use rand::random;
@@ -29,56 +20,11 @@ use tower_http::services::ServeDir;
 const SEED_MASK: u64 = 0xFFFF_FFFF_FFFF;
 const MAX_PUBLIC_CELL_COUNT: usize = 20;
 const STORED_PUZZLE_DB_PREFIX: &str = "stored_puzzle:";
+const STORED_PUZZLE_ID_MASK: u32 = 0x00FF_FFFF;
 
 #[derive(Clone)]
 struct AppState {
-    next_id: Arc<AtomicU64>,
-    puzzles: Arc<Mutex<HashMap<u64, ActivePuzzle>>>,
     stored_puzzles: Arc<DB>,
-}
-
-#[derive(Debug, Clone)]
-struct ActivePuzzle {
-    puzzle: Puzzle,
-    clue_score_terms: Vec<Vec<Option<ClueScoreTerms>>>,
-    generated_score_series: Vec<ClueScoreTerms>,
-    generated_clue_texts: Vec<String>,
-    seed: Option<String>,
-    stored_puzzle_id: Option<String>,
-}
-
-impl ActivePuzzle {
-    fn from_generated(seed: u64, generated: GeneratedPuzzle) -> Self {
-        Self {
-            clue_score_terms: generated
-                .clue_score_terms
-                .iter()
-                .map(|row| row.iter().cloned().map(Some).collect())
-                .collect(),
-            generated_score_series: generated.generation_score_series.clone(),
-            generated_clue_texts: generated.generation_clue_texts.clone(),
-            puzzle: generated.puzzle,
-            seed: Some(format_seed(seed)),
-            stored_puzzle_id: None,
-        }
-    }
-
-    fn from_stored(stored_puzzle_id: String, puzzle: Puzzle) -> Self {
-        let clue_score_terms = puzzle
-            .cells
-            .iter()
-            .map(|row| row.iter().map(|_| None).collect())
-            .collect();
-
-        Self {
-            puzzle,
-            clue_score_terms,
-            generated_score_series: Vec::new(),
-            generated_clue_texts: Vec::new(),
-            seed: None,
-            stored_puzzle_id: Some(stored_puzzle_id),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -90,7 +36,6 @@ struct NewPuzzleParams {
 
 #[derive(Debug, Serialize)]
 struct PuzzleResponse {
-    id: u64,
     seed: Option<String>,
     stored_puzzle_id: Option<String>,
     rows: u8,
@@ -121,11 +66,29 @@ struct GuessResponse {
 #[derive(Debug, Serialize)]
 struct CreateStoredPuzzleResponse {
     stored_puzzle_id: String,
-    path: String,
 }
 
 #[derive(Debug, Deserialize)]
 struct GuessRequest {
+    source: PuzzleSource,
+    #[serde(default)]
+    moves: Vec<AppliedGuess>,
+    row: usize,
+    col: usize,
+    guess: Answer,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PuzzleSource {
+    Generated { seed: String, rows: u8, cols: u8 },
+    Stored { stored_puzzle_id: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AppliedGuess {
+    row: usize,
+    col: usize,
     guess: Answer,
 }
 
@@ -137,8 +100,6 @@ struct ErrorResponse {
 #[tokio::main]
 async fn main() {
     let state = AppState {
-        next_id: Arc::new(AtomicU64::new(1)),
-        puzzles: Arc::new(Mutex::new(HashMap::new())),
         stored_puzzles: Arc::new(open_stored_puzzle_db().expect("open stored puzzle db")),
     };
 
@@ -147,14 +108,11 @@ async fn main() {
         .route("/", get(index_html))
         .route("/p/{stored_puzzle_id}", get(index_html))
         .route("/api/puzzles/new", get(new_puzzle))
+        .route("/api/puzzles/guess", post(guess_cell))
         .route("/api/stored-puzzles/generate", post(create_stored_puzzle))
         .route(
             "/api/stored-puzzles/{stored_puzzle_id}",
             get(load_stored_puzzle),
-        )
-        .route(
-            "/api/puzzles/{id}/cells/{row}/{col}/guess",
-            post(guess_cell),
         )
         .fallback_service(ServeDir::new(static_dir))
         .with_state(state);
@@ -173,40 +131,19 @@ async fn index_html() -> Html<&'static str> {
 }
 
 async fn new_puzzle(
-    State(state): State<AppState>,
     Query(params): Query<NewPuzzleParams>,
 ) -> Result<Json<PuzzleResponse>, AppError> {
-    let seed = match params.seed {
-        Some(seed) => parse_seed(&seed)?,
-        None => random::<u64>() & SEED_MASK,
-    };
-    let board = parse_board_shape(params.rows, params.cols)?;
-    let generated = generate_puzzle_with_seed_and_size(seed, board)
-        .map_err(|error| AppError::internal(format!("failed to generate puzzle: {error:?}")))?;
-    let active = ActivePuzzle::from_generated(seed, generated);
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-    let response = PuzzleResponse::from_active_puzzle(id, &active);
-
-    state
-        .puzzles
-        .lock()
-        .map_err(|_| AppError::internal("failed to lock puzzle store"))?
-        .insert(id, active);
-
-    Ok(Json(response))
+    let (seed, generated) =
+        generate_requested_puzzle(params.seed.as_deref(), params.rows, params.cols)?;
+    Ok(Json(PuzzleResponse::from_generated(seed, &generated)))
 }
 
 async fn create_stored_puzzle(
     State(state): State<AppState>,
     Query(params): Query<NewPuzzleParams>,
 ) -> Result<Json<CreateStoredPuzzleResponse>, AppError> {
-    let seed = match params.seed {
-        Some(seed) => parse_seed(&seed)?,
-        None => random::<u64>() & SEED_MASK,
-    };
-    let board = parse_board_shape(params.rows, params.cols)?;
-    let generated = generate_puzzle_with_seed_and_size(seed, board)
-        .map_err(|error| AppError::internal(format!("failed to generate puzzle: {error:?}")))?;
+    let (_, generated) =
+        generate_requested_puzzle(params.seed.as_deref(), params.rows, params.cols)?;
     let stored_puzzle = StoredPuzzle::from(&generated.puzzle);
     let stored_puzzle_id = generate_stored_puzzle_id(&state.stored_puzzles)?;
     let encoded = serde_json::to_vec(&stored_puzzle)
@@ -217,19 +154,76 @@ async fn create_stored_puzzle(
         .put(stored_puzzle_db_key(&stored_puzzle_id), encoded)
         .map_err(|error| AppError::internal(format!("failed to save stored puzzle: {error}")))?;
 
-    Ok(Json(CreateStoredPuzzleResponse {
-        path: stored_puzzle_path(&stored_puzzle_id),
-        stored_puzzle_id,
-    }))
+    Ok(Json(CreateStoredPuzzleResponse { stored_puzzle_id }))
 }
 
 async fn load_stored_puzzle(
     State(state): State<AppState>,
     Path(stored_puzzle_id): Path<String>,
 ) -> Result<Json<PuzzleResponse>, AppError> {
+    let puzzle = load_stored_puzzle_by_id(&state, &stored_puzzle_id)?;
+    Ok(Json(PuzzleResponse::from_stored(
+        &stored_puzzle_id,
+        &puzzle,
+    )))
+}
+
+async fn guess_cell(
+    State(state): State<AppState>,
+    Json(request): Json<GuessRequest>,
+) -> Result<Json<GuessResponse>, AppError> {
+    let GuessRequest {
+        source,
+        moves,
+        row,
+        col,
+        guess,
+    } = request;
+
+    let (mut puzzle, generated_score_terms) = match source {
+        PuzzleSource::Generated { seed, rows, cols } => {
+            let (_, generated) =
+                generate_requested_puzzle(Some(seed.as_str()), Some(rows), Some(cols))?;
+            (generated.puzzle, Some(generated.clue_score_terms))
+        }
+        PuzzleSource::Stored { stored_puzzle_id } => {
+            (load_stored_puzzle_by_id(&state, &stored_puzzle_id)?, None)
+        }
+    };
+
+    replay_moves(&mut puzzle, &moves)?;
+    validate_and_reveal_guess(&mut puzzle, row, col, guess)?;
+    let score_terms = generated_score_terms.map(|rows| rows[row][col].clone());
+
+    Ok(Json(GuessResponse {
+        clue: puzzle.cells[row][col].clue.text(),
+        is_nonsense: matches!(
+            puzzle.cells[row][col].clue,
+            clues_core::Clue::Nonsense { .. }
+        ),
+        score_terms,
+    }))
+}
+
+fn generate_requested_puzzle(
+    seed: Option<&str>,
+    rows: Option<u8>,
+    cols: Option<u8>,
+) -> Result<(u64, GeneratedPuzzle), AppError> {
+    let seed = match seed {
+        Some(seed) => parse_seed(seed)?,
+        None => random::<u64>() & SEED_MASK,
+    };
+    let board = parse_board_shape(rows, cols)?;
+    let generated = generate_puzzle_with_seed_and_size(seed, board)
+        .map_err(|error| AppError::internal(format!("failed to generate puzzle: {error:?}")))?;
+    Ok((seed, generated))
+}
+
+fn load_stored_puzzle_by_id(state: &AppState, stored_puzzle_id: &str) -> Result<Puzzle, AppError> {
     let encoded = state
         .stored_puzzles
-        .get_pinned(stored_puzzle_db_key(&stored_puzzle_id))
+        .get_pinned(stored_puzzle_db_key(stored_puzzle_id))
         .map_err(|error| AppError::internal(format!("failed to read stored puzzle: {error}")))?
         .ok_or_else(|| AppError::not_found("stored puzzle not found"))?;
     let stored_puzzle: StoredPuzzle = serde_json::from_slice(&encoded).map_err(|error| {
@@ -237,40 +231,39 @@ async fn load_stored_puzzle(
             "failed to decode stored puzzle {stored_puzzle_id}: {error}"
         ))
     })?;
-    let puzzle = Puzzle::try_from(stored_puzzle).map_err(|error| match error {
-        StoredPuzzleConversionError::DuplicateName(name) => {
+    let puzzle = match stored_puzzle {
+        StoredPuzzle::V1(puzzle) => puzzle,
+    };
+
+    puzzle
+        .validate()
+        .map_err(map_stored_puzzle_validation_error)?;
+    Ok(puzzle)
+}
+
+fn map_stored_puzzle_validation_error(error: PuzzleValidationError) -> AppError {
+    match error {
+        PuzzleValidationError::DuplicateName(name) => {
             AppError::internal(format!("stored puzzle has duplicate name: {name}"))
         }
         other => AppError::internal(format!("stored puzzle is invalid: {other:?}")),
-    })?;
-
-    let active = ActivePuzzle::from_stored(stored_puzzle_id, puzzle);
-    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
-    let response = PuzzleResponse::from_active_puzzle(id, &active);
-
-    state
-        .puzzles
-        .lock()
-        .map_err(|_| AppError::internal("failed to lock puzzle store"))?
-        .insert(id, active);
-
-    Ok(Json(response))
+    }
 }
 
-async fn guess_cell(
-    State(state): State<AppState>,
-    Path((id, row, col)): Path<(u64, usize, usize)>,
-    Json(request): Json<GuessRequest>,
-) -> Result<Json<GuessResponse>, AppError> {
-    let mut puzzles = state
-        .puzzles
-        .lock()
-        .map_err(|_| AppError::internal("failed to lock puzzle store"))?;
-    let active = puzzles
-        .get_mut(&id)
-        .ok_or_else(|| AppError::not_found("puzzle not found"))?;
-    let puzzle = &mut active.puzzle;
+fn replay_moves(puzzle: &mut Puzzle, moves: &[AppliedGuess]) -> Result<(), AppError> {
+    for prior_move in moves {
+        validate_and_reveal_guess(puzzle, prior_move.row, prior_move.col, prior_move.guess)?;
+    }
 
+    Ok(())
+}
+
+fn validate_and_reveal_guess(
+    puzzle: &mut Puzzle,
+    row: usize,
+    col: usize,
+    guess: Answer,
+) -> Result<(), AppError> {
     {
         let row_cells = puzzle
             .cells
@@ -296,7 +289,7 @@ async fn guess_cell(
     let cell_name = puzzle.cells[row][col].name.clone();
     let forced = analysis.forced_answers[row][col];
 
-    match (forced, request.guess) {
+    match (forced, guess) {
         (ForcedAnswer::Innocent, Answer::Innocent) | (ForcedAnswer::Criminal, Answer::Criminal) => {
         }
         (ForcedAnswer::Innocent, Answer::Criminal) => {
@@ -317,71 +310,80 @@ async fn guess_cell(
     }
 
     puzzle.cells[row][col].state = Visibility::Revealed;
-
-    Ok(Json(GuessResponse {
-        clue: puzzle.cells[row][col].clue.text(),
-        is_nonsense: matches!(
-            puzzle.cells[row][col].clue,
-            clues_core::Clue::Nonsense { .. }
-        ),
-        score_terms: active.clue_score_terms[row][col].clone(),
-    }))
+    Ok(())
 }
 
 impl PuzzleResponse {
-    fn from_active_puzzle(id: u64, active: &ActivePuzzle) -> Self {
-        let rows = active.puzzle.cells.len() as u8;
-        let cols = active
-            .puzzle
-            .cells
-            .first()
-            .map(|row| row.len())
-            .unwrap_or_default() as u8;
-        let cells = active
-            .puzzle
-            .cells
-            .iter()
-            .enumerate()
-            .map(|(row_index, row)| {
-                row.iter()
-                    .enumerate()
-                    .map(|(col_index, cell)| CellResponse {
-                        name: cell.name.clone(),
-                        role: cell.role.clone(),
-                        clue: if cell.state == Visibility::Revealed {
-                            Some(cell.clue.text())
-                        } else {
-                            None
-                        },
-                        is_nonsense: cell.state == Visibility::Revealed
-                            && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
-                        score_terms: if cell.state == Visibility::Revealed {
-                            active.clue_score_terms[row_index][col_index].clone()
-                        } else {
-                            None
-                        },
-                        revealed_answer: if cell.state == Visibility::Revealed {
-                            Some(cell.answer)
-                        } else {
-                            None
-                        },
-                        revealed: cell.state == Visibility::Revealed,
-                    })
-                    .collect()
-            })
-            .collect();
-
+    fn from_generated(seed: u64, generated: &GeneratedPuzzle) -> Self {
         Self {
-            id,
-            seed: active.seed.clone(),
-            stored_puzzle_id: active.stored_puzzle_id.clone(),
-            rows,
-            cols,
-            cells,
-            generated_score_series: active.generated_score_series.clone(),
-            generated_clue_texts: active.generated_clue_texts.clone(),
+            seed: Some(format_seed(seed)),
+            stored_puzzle_id: None,
+            rows: generated.puzzle.cells.len() as u8,
+            cols: generated
+                .puzzle
+                .cells
+                .first()
+                .map(|row| row.len())
+                .unwrap_or_default() as u8,
+            cells: cell_responses(&generated.puzzle, Some(&generated.clue_score_terms)),
+            generated_score_series: generated.generation_score_series.clone(),
+            generated_clue_texts: generated.generation_clue_texts.clone(),
         }
     }
+
+    fn from_stored(stored_puzzle_id: &str, puzzle: &Puzzle) -> Self {
+        Self {
+            seed: None,
+            stored_puzzle_id: Some(stored_puzzle_id.to_string()),
+            rows: puzzle.cells.len() as u8,
+            cols: puzzle
+                .cells
+                .first()
+                .map(|row| row.len())
+                .unwrap_or_default() as u8,
+            cells: cell_responses(puzzle, None),
+            generated_score_series: Vec::new(),
+            generated_clue_texts: Vec::new(),
+        }
+    }
+}
+
+fn cell_responses(
+    puzzle: &Puzzle,
+    clue_score_terms: Option<&[Vec<ClueScoreTerms>]>,
+) -> Vec<Vec<CellResponse>> {
+    puzzle
+        .cells
+        .iter()
+        .enumerate()
+        .map(|(row_index, row)| {
+            row.iter()
+                .enumerate()
+                .map(|(col_index, cell)| CellResponse {
+                    name: cell.name.clone(),
+                    role: cell.role.clone(),
+                    clue: if cell.state == Visibility::Revealed {
+                        Some(cell.clue.text())
+                    } else {
+                        None
+                    },
+                    is_nonsense: cell.state == Visibility::Revealed
+                        && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
+                    score_terms: if cell.state == Visibility::Revealed {
+                        clue_score_terms.map(|rows| rows[row_index][col_index].clone())
+                    } else {
+                        None
+                    },
+                    revealed_answer: if cell.state == Visibility::Revealed {
+                        Some(cell.answer)
+                    } else {
+                        None
+                    },
+                    revealed: cell.state == Visibility::Revealed,
+                })
+                .collect()
+        })
+        .collect()
 }
 
 fn parse_board_shape(rows: Option<u8>, cols: Option<u8>) -> Result<BoardShape, AppError> {
@@ -420,17 +422,17 @@ fn format_seed(seed: u64) -> String {
     format!("{:012x}", seed & SEED_MASK)
 }
 
+fn format_stored_puzzle_id(value: u32) -> String {
+    format!("{:06x}", value & STORED_PUZZLE_ID_MASK)
+}
+
 fn stored_puzzle_db_key(stored_puzzle_id: &str) -> Vec<u8> {
     format!("{STORED_PUZZLE_DB_PREFIX}{stored_puzzle_id}").into_bytes()
 }
 
-fn stored_puzzle_path(stored_puzzle_id: &str) -> String {
-    format!("/p/{stored_puzzle_id}")
-}
-
 fn generate_stored_puzzle_id(db: &DB) -> Result<String, AppError> {
     for _ in 0..16 {
-        let candidate = format_seed(random::<u64>());
+        let candidate = format_stored_puzzle_id(random::<u32>());
         let exists = db
             .get_pinned(stored_puzzle_db_key(&candidate))
             .map_err(|error| {

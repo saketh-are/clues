@@ -76,7 +76,6 @@ function emojiForCell(cell) {
 }
 
 const state = {
-  puzzleId: null,
   currentSeed: null,
   currentStoredPuzzleId: null,
   boardSize: null,
@@ -199,6 +198,27 @@ function progressStorageKey(boardSize = currentBoardSize()) {
   }
 
   return `${progressStoragePrefix}${state.currentSeed}:${boardSize.rows}x${boardSize.cols}`;
+}
+
+function currentPuzzleSource() {
+  if (state.currentStoredPuzzleId !== null) {
+    return {
+      kind: "stored",
+      stored_puzzle_id: state.currentStoredPuzzleId,
+    };
+  }
+
+  if (state.currentSeed !== null) {
+    const boardSize = currentBoardSize();
+    return {
+      kind: "generated",
+      seed: state.currentSeed,
+      rows: boardSize.rows,
+      cols: boardSize.cols,
+    };
+  }
+
+  throw new Error("No puzzle is loaded");
 }
 
 function rowLabel(index) {
@@ -602,7 +622,6 @@ async function loadPuzzle(seed, options = {}) {
   }
 
   const puzzle = await response.json();
-  state.puzzleId = puzzle.id;
   state.currentSeed = normalizeSeed(puzzle.seed);
   state.currentStoredPuzzleId = normalizeStoredPuzzleId(puzzle.stored_puzzle_id);
   state.boardSize = {
@@ -782,12 +801,16 @@ function renderBoard() {
 }
 
 async function fetchValidatedClue(row, col, guess) {
-  const response = await fetch(`/api/puzzles/${state.puzzleId}/cells/${row}/${col}/guess`, {
+  const response = await fetch("/api/puzzles/guess", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
+      source: currentPuzzleSource(),
+      moves: state.moves,
+      row,
+      col,
       guess,
     }),
   });

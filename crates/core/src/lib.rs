@@ -15,12 +15,9 @@ pub use generator::{
     generate_puzzle, generate_puzzle_with_seed, generate_puzzle_with_seed_and_size,
 };
 pub use geometry::{BoardShape, Offset, Position, TOUCHING_NEIGHBOR_OFFSETS};
-pub use puzzle::{Cell, Puzzle, Visibility};
+pub use puzzle::{Cell, Puzzle, PuzzleValidationError, RenamePuzzleCellError, Visibility};
 pub use solver::{
     ClueAnalysis, ForcedAnswer, SolveError, analyze_clues, analyze_puzzle, analyze_revealed_puzzle,
 };
-pub use storage::{
-    RenameStoredCellError, StoredCellV1, StoredPositionV1, StoredPuzzle,
-    StoredPuzzleConversionError, StoredPuzzleV1,
-};
+pub use storage::StoredPuzzle;
 pub use types::{Answer, NAMES, Name, ROLES, Role};
