@@ -1091,6 +1091,40 @@ function toggleScoreDebugOverlay() {
   renderScoreDebugPanel();
 }
 
+function closeTopOverlayOnEscape() {
+  if (!guessModalEl.hidden) {
+    closeGuessModal();
+    return true;
+  }
+
+  if (!confirmModalEl.hidden) {
+    closeConfirmModal();
+    return true;
+  }
+
+  if (!errorModalEl.hidden) {
+    closeErrorModal();
+    return true;
+  }
+
+  if (!finishModalEl.hidden) {
+    dismissFinishModal();
+    return true;
+  }
+
+  if (!startModalEl.hidden) {
+    closeStartModal();
+    return true;
+  }
+
+  if (state.scoreDebugVisible) {
+    toggleScoreDebugOverlay();
+    return true;
+  }
+
+  return false;
+}
+
 function clearPendingNoteTap() {
   if (!state.pendingNoteTap) {
     return;
@@ -1453,6 +1487,11 @@ scoreDebugEl.addEventListener("mouseleave", () => {
   applyScoreMetricFocus(null);
 });
 window.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && closeTopOverlayOnEscape()) {
+    event.preventDefault();
+    return;
+  }
+
   if (shouldIgnoreDebugShortcut(event)) {
     return;
   }
