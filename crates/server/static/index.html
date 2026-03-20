@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clues</title>
-    <link rel="stylesheet" href="/styles.css?v=20260319r" />
+    <link rel="stylesheet" href="/styles.css?v=20260319s" />
   </head>
   <body>
     <div class="background background-one"></div>
@@ -109,11 +109,23 @@
       </div>
     </div>
 
+    <div id="corner-note-menu" class="note-menu" hidden aria-hidden="true">
+      <div id="corner-note-menu-card" class="note-menu-card">
+        <div class="note-menu-option note-yellow" data-color="yellow"></div>
+        <div class="note-menu-option note-red" data-color="red"></div>
+        <div class="note-menu-option note-green" data-color="green"></div>
+        <div class="note-menu-option note-orange" data-color="orange"></div>
+        <div class="note-menu-option note-magenta" data-color="magenta"></div>
+        <div class="note-menu-option note-cyan" data-color="cyan"></div>
+      </div>
+    </div>
+
     <template id="cell-template">
       <article class="cell">
         <div class="cell-top">
           <span class="cell-position"></span>
           <button class="cell-note" type="button" aria-label="Tile note"></button>
+          <button class="cell-note-secondary" type="button" aria-label="Tile color note"></button>
         </div>
         <div class="cell-header">
           <span class="cell-emoji" aria-hidden="true"></span>
@@ -124,6 +136,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260319r" defer></script>
+    <script src="/app.js?v=20260319s" defer></script>
   </body>
 </html>

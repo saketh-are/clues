@@ -28,10 +28,17 @@ const finishBackdropEl = document.querySelector("#finish-backdrop");
 const finishMessageEl = document.querySelector("#finish-message");
 const finishDismissButton = document.querySelector("#finish-dismiss");
 const scoreDebugEl = document.querySelector("#score-debug");
+const cornerNoteMenuEl = document.querySelector("#corner-note-menu");
+const cornerNoteMenuCardEl = document.querySelector("#corner-note-menu-card");
+const cornerNoteOptionEls = [...document.querySelectorAll("#corner-note-menu [data-color]")];
 const progressStoragePrefix = "clues-progress:v1:";
 const noteTapDelayMs = 420;
+const cornerNotePressDelayMs = 420;
+const suppressedNoteClickDelayMs = 260;
 const clueTapDelayMs = 260;
-const noteColors = new Set(["yellow", "red", "green"]);
+const noteColors = ["yellow", "red", "green", "orange", "magenta", "cyan"];
+const topNoteColors = new Set(noteColors);
+const bottomNoteColors = new Set(noteColors);
 const invalidMoveMessage = "⚠️ Not enough evidence!";
 const specialNameEmojis = {
   Coriander: "₍^. .^₎⟆",
@@ -75,12 +82,17 @@ const state = {
   guesses: [],
   moves: [],
   notes: new Map(),
+  bottomNotes: new Map(),
   loadingClues: new Set(),
   modalCell: null,
   hiddenClues: new Set(),
   flashingTiles: new Set(),
   flashTimer: null,
   pendingNoteTap: null,
+  pendingTopNotePress: null,
+  pendingBottomNotePress: null,
+  suppressedTopNoteClick: null,
+  suppressedBottomNoteClick: null,
   pendingClueTap: null,
   shareFeedbackTimer: null,
   timerStartedAt: null,
@@ -93,6 +105,8 @@ const state = {
   generatedScoreSeries: [],
   generatedClueTexts: [],
   initialRevealed: null,
+  cornerNoteMenu: null,
+  activeCornerNoteColor: null,
 };
 
 function normalizeSeed(value) {
@@ -155,7 +169,16 @@ function readSavedProgress(seed) {
             Array.isArray(entry) &&
             entry.length === 2 &&
             typeof entry[0] === "string" &&
-            noteColors.has(entry[1]),
+            topNoteColors.has(entry[1]),
+        )
+      : [];
+    const bottomNotes = Array.isArray(parsed?.bottomNotes)
+      ? parsed.bottomNotes.filter(
+          (entry) =>
+            Array.isArray(entry) &&
+            entry.length === 2 &&
+            typeof entry[0] === "string" &&
+            bottomNoteColors.has(entry[1]),
         )
       : [];
     const timerStartedAt =
@@ -168,7 +191,15 @@ function readSavedProgress(seed) {
         : null;
     const completionAcknowledged = parsed?.completionAcknowledged === true;
 
-    return { moves, hiddenClues, notes, timerStartedAt, timerCompletedAt, completionAcknowledged };
+    return {
+      moves,
+      hiddenClues,
+      notes,
+      bottomNotes,
+      timerStartedAt,
+      timerCompletedAt,
+      completionAcknowledged,
+    };
   } catch {
     return null;
   }
@@ -189,11 +220,18 @@ function persistProgress() {
 
   const hiddenClues = [...state.hiddenClues];
   const notes = [...state.notes.entries()];
+  const bottomNotes = [...state.bottomNotes.entries()];
   const hasTimerState =
     state.timerStartedAt !== null ||
     state.timerCompletedAt !== null ||
     state.completionAcknowledged;
-  if (state.moves.length === 0 && hiddenClues.length === 0 && notes.length === 0 && !hasTimerState) {
+  if (
+    state.moves.length === 0 &&
+    hiddenClues.length === 0 &&
+    notes.length === 0 &&
+    bottomNotes.length === 0 &&
+    !hasTimerState
+  ) {
     clearSavedProgress(state.currentSeed);
     return;
   }
@@ -204,6 +242,7 @@ function persistProgress() {
       moves: state.moves,
       hiddenClues,
       notes,
+      bottomNotes,
       timerStartedAt: state.timerStartedAt,
       timerCompletedAt: state.timerCompletedAt,
       completionAcknowledged: state.completionAcknowledged,
@@ -309,6 +348,7 @@ function openFinishModal() {
     return;
   }
 
+  closeCornerNoteMenu();
   closeGuessModal();
   closeConfirmModal();
   closeErrorModal();
@@ -344,6 +384,7 @@ function startPuzzle() {
 }
 
 function openConfirmModal(action) {
+  closeCornerNoteMenu();
   closeGuessModal();
   closeErrorModal();
   closeFinishModal();
@@ -426,6 +467,7 @@ async function loadPuzzle(seed, options = {}) {
   );
   state.moves = [];
   state.notes = new Map();
+  state.bottomNotes = new Map();
   state.loadingClues = new Set();
   state.modalCell = null;
   state.hiddenClues = new Set();
@@ -433,12 +475,18 @@ async function loadPuzzle(seed, options = {}) {
   state.timerStartedAt = null;
   state.timerCompletedAt = null;
   state.completionAcknowledged = false;
+  state.pendingTopNotePress = null;
+  state.suppressedTopNoteClick = null;
+  state.suppressedBottomNoteClick = null;
+  state.cornerNoteMenu = null;
   state.scoreDebugTab = "generated";
   state.initialRevealed =
     puzzle.cells.flatMap((row, rowIndex) =>
       row.map((cell, colIndex) => ({ cell, rowIndex, colIndex })),
     ).find(({ cell }) => cell.revealed && cell.score_terms) ?? null;
   clearPendingNoteTap();
+  clearPendingTopNotePress();
+  clearPendingBottomNotePress();
   clearPendingClueTap();
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
@@ -450,6 +498,7 @@ async function loadPuzzle(seed, options = {}) {
   closeErrorModal();
   closeStartModal();
   closeFinishModal();
+  closeCornerNoteMenu();
   const restoreResult = await restoreProgress();
   renderBoard();
   if (restoreResult.error) {
@@ -480,10 +529,12 @@ function renderBoard() {
       const roleEl = fragment.querySelector(".cell-role");
       const clueEl = fragment.querySelector(".cell-clue");
       const noteEl = fragment.querySelector(".cell-note");
+      const bottomNoteEl = fragment.querySelector(".cell-note-secondary");
       const key = guessKey(rowIndex, colIndex);
       const guess = state.guesses[rowIndex][colIndex];
       const clueHidden = state.hiddenClues.has(key);
       const note = state.notes.get(key) ?? "none";
+      const bottomNote = state.bottomNotes.get(key) ?? "none";
 
       positionEl.textContent = `${rowLabels[rowIndex]}${colLabels[colIndex]}`;
       emojiEl.textContent = emojiForCell(cell);
@@ -492,9 +543,34 @@ function renderBoard() {
       card.classList.add(cell.clue ? "has-clue" : "hidden-clue");
       noteEl.classList.add(`note-${note}`);
       noteEl.setAttribute("aria-label", note === "none" ? "Add tile note" : `Clear ${note} note`);
+      noteEl.addEventListener("pointerdown", (event) => {
+        handleTopNotePressStart(event, rowIndex, colIndex);
+      });
+      noteEl.addEventListener("pointerup", handleTopNotePressEnd);
+      noteEl.addEventListener("pointercancel", handleTopNotePressEnd);
+      noteEl.addEventListener("pointerleave", handleTopNotePressEnd);
       noteEl.addEventListener("click", (event) => {
-        event.stopPropagation();
-        handleNoteTap(rowIndex, colIndex);
+        handleTopNoteClick(event, rowIndex, colIndex);
+      });
+      noteEl.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
+      });
+      bottomNoteEl.classList.add(`note-${bottomNote}`);
+      bottomNoteEl.setAttribute(
+        "aria-label",
+        bottomNote === "none" ? "Add tile color note" : `Clear ${bottomNote} color note`,
+      );
+      bottomNoteEl.addEventListener("pointerdown", (event) => {
+        handleBottomNotePressStart(event, rowIndex, colIndex);
+      });
+      bottomNoteEl.addEventListener("pointerup", handleBottomNotePressEnd);
+      bottomNoteEl.addEventListener("pointercancel", handleBottomNotePressEnd);
+      bottomNoteEl.addEventListener("pointerleave", handleBottomNotePressEnd);
+      bottomNoteEl.addEventListener("click", (event) => {
+        handleBottomNoteClick(event, rowIndex, colIndex);
+      });
+      bottomNoteEl.addEventListener("contextmenu", (event) => {
+        event.preventDefault();
       });
 
       if (cell.revealed && cell.revealed_answer) {
@@ -508,7 +584,7 @@ function renderBoard() {
       }
 
       if (state.flashingTiles.has(key)) {
-        card.classList.add("flash");
+        nameEl.classList.add("flash-name");
       }
 
       if (cell.clue) {
@@ -566,11 +642,14 @@ async function fetchValidatedClue(row, col, guess) {
 }
 
 function applyAcceptedGuess(row, col, guess, clueResult) {
+  const key = guessKey(row, col);
   state.guesses[row][col] = guess;
   state.cells[row][col].clue = clueResult.clue;
   state.cells[row][col].is_nonsense = clueResult.is_nonsense === true;
   state.cells[row][col].score_terms = clueResult.score_terms ?? null;
-  state.hiddenClues.delete(guessKey(row, col));
+  state.hiddenClues.delete(key);
+  state.notes.delete(key);
+  state.bottomNotes.delete(key);
   state.moves = state.moves.filter((move) => move.row !== row || move.col !== col);
   state.moves.push({ row, col, guess });
 }
@@ -1092,6 +1171,11 @@ function toggleScoreDebugOverlay() {
 }
 
 function closeTopOverlayOnEscape() {
+  if (!cornerNoteMenuEl.hidden) {
+    closeCornerNoteMenu();
+    return true;
+  }
+
   if (!guessModalEl.hidden) {
     closeGuessModal();
     return true;
@@ -1134,6 +1218,24 @@ function clearPendingNoteTap() {
   state.pendingNoteTap = null;
 }
 
+function clearPendingTopNotePress() {
+  if (!state.pendingTopNotePress) {
+    return;
+  }
+
+  window.clearTimeout(state.pendingTopNotePress.timerId);
+  state.pendingTopNotePress = null;
+}
+
+function clearPendingBottomNotePress() {
+  if (!state.pendingBottomNotePress) {
+    return;
+  }
+
+  window.clearTimeout(state.pendingBottomNotePress.timerId);
+  state.pendingBottomNotePress = null;
+}
+
 function clearPendingClueTap() {
   if (!state.pendingClueTap) {
     return;
@@ -1141,6 +1243,109 @@ function clearPendingClueTap() {
 
   window.clearTimeout(state.pendingClueTap.timerId);
   state.pendingClueTap = null;
+}
+
+function suppressTopNoteClick(key) {
+  state.suppressedTopNoteClick = {
+    key,
+    until: Date.now() + suppressedNoteClickDelayMs,
+  };
+}
+
+function suppressBottomNoteClick(key) {
+  state.suppressedBottomNoteClick = {
+    key,
+    until: Date.now() + suppressedNoteClickDelayMs,
+  };
+}
+
+function shouldSuppressTopNoteClick(key) {
+  if (!state.suppressedTopNoteClick) {
+    return false;
+  }
+
+  if (state.suppressedTopNoteClick.until < Date.now()) {
+    state.suppressedTopNoteClick = null;
+    return false;
+  }
+
+  if (state.suppressedTopNoteClick.key !== key) {
+    return false;
+  }
+
+  state.suppressedTopNoteClick = null;
+  return true;
+}
+
+function shouldSuppressBottomNoteClick(key) {
+  if (!state.suppressedBottomNoteClick) {
+    return false;
+  }
+
+  if (state.suppressedBottomNoteClick.until < Date.now()) {
+    state.suppressedBottomNoteClick = null;
+    return false;
+  }
+
+  if (state.suppressedBottomNoteClick.key !== key) {
+    return false;
+  }
+
+  state.suppressedBottomNoteClick = null;
+  return true;
+}
+
+function closeCornerNoteMenu() {
+  state.cornerNoteMenu = null;
+  state.activeCornerNoteColor = null;
+  cornerNoteMenuEl.hidden = true;
+  cornerNoteMenuCardEl.style.left = "";
+  cornerNoteMenuCardEl.style.top = "";
+  updateCornerNoteMenuActiveColor(null);
+}
+
+function updateCornerNoteMenuActiveColor(color) {
+  state.activeCornerNoteColor = color;
+  cornerNoteOptionEls.forEach((option) => {
+    option.classList.toggle("active", option.dataset.color === color);
+  });
+}
+
+function positionCornerNoteMenu(tileRect) {
+  const margin = 10;
+  const menuRect = cornerNoteMenuCardEl.getBoundingClientRect();
+  let left = tileRect.left + 4;
+  let top = tileRect.top + (tileRect.height - menuRect.height) / 2;
+
+  if (left < margin) {
+    left = margin;
+  }
+  if (left + menuRect.width > window.innerWidth - margin) {
+    left = window.innerWidth - menuRect.width - margin;
+  }
+  if (top < margin) {
+    top = margin;
+  }
+  if (top + menuRect.height > window.innerHeight - margin) {
+    top = Math.max(margin, window.innerHeight - menuRect.height - margin);
+  }
+
+  cornerNoteMenuCardEl.style.left = `${left}px`;
+  cornerNoteMenuCardEl.style.top = `${top}px`;
+}
+
+function openCornerNoteMenu(row, col, slot, tileRect, pointerId) {
+  clearPendingTopNotePress();
+  clearPendingBottomNotePress();
+  const key = guessKey(row, col);
+  const currentColor =
+    slot === "top" ? state.notes.get(key) ?? noteColors[0] : state.bottomNotes.get(key) ?? noteColors[0];
+  state.cornerNoteMenu = { row, col, slot, pointerId };
+  cornerNoteMenuEl.hidden = false;
+  cornerNoteMenuCardEl.style.left = "0px";
+  cornerNoteMenuCardEl.style.top = "0px";
+  positionCornerNoteMenu(tileRect);
+  updateCornerNoteMenuActiveColor(currentColor);
 }
 
 function setNote(row, col, color) {
@@ -1154,6 +1359,54 @@ function setNote(row, col, color) {
 
   persistProgress();
   renderBoard();
+}
+
+function setBottomNote(row, col, color) {
+  const key = guessKey(row, col);
+
+  if (color === null) {
+    state.bottomNotes.delete(key);
+  } else {
+    state.bottomNotes.set(key, color);
+  }
+
+  closeCornerNoteMenu();
+  persistProgress();
+  renderBoard();
+}
+
+function setCornerNote(row, col, slot, color) {
+  closeCornerNoteMenu();
+  if (slot === "top") {
+    setNote(row, col, color);
+  } else {
+    setBottomNote(row, col, color);
+  }
+}
+
+function cornerNoteColorAtClientY(clientY) {
+  const rect = cornerNoteMenuCardEl.getBoundingClientRect();
+  const heightPerColor = rect.height / cornerNoteOptionEls.length;
+  const clampedY = Math.max(rect.top, Math.min(rect.bottom - 1, clientY));
+  const index = Math.max(
+    0,
+    Math.min(cornerNoteOptionEls.length - 1, Math.floor((clampedY - rect.top) / heightPerColor)),
+  );
+  return cornerNoteOptionEls[index]?.dataset.color ?? null;
+}
+
+function finalizeCornerNoteMenu() {
+  if (!state.cornerNoteMenu) {
+    return;
+  }
+
+  const { row, col, slot } = state.cornerNoteMenu;
+  const color = state.activeCornerNoteColor;
+  if (color) {
+    setCornerNote(row, col, slot, color);
+  } else {
+    closeCornerNoteMenu();
+  }
 }
 
 function noteColorForTapCount(count) {
@@ -1199,6 +1452,85 @@ function handleNoteTap(row, col) {
   setNote(row, col, noteColorForTapCount(1));
 }
 
+function handleTopNotePressStart(event, row, col) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.pointerType === "mouse" && event.button !== 0) {
+    return;
+  }
+
+  clearPendingTopNotePress();
+  const key = guessKey(row, col);
+  const tileRect = event.currentTarget.closest(".cell").getBoundingClientRect();
+  state.pendingTopNotePress = {
+    key,
+    timerId: window.setTimeout(() => {
+      suppressTopNoteClick(key);
+      state.pendingTopNotePress = null;
+      openCornerNoteMenu(row, col, "top", tileRect, event.pointerId);
+    }, cornerNotePressDelayMs),
+  };
+}
+
+function handleTopNotePressEnd() {
+  clearPendingTopNotePress();
+}
+
+function handleTopNoteClick(event, row, col) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const key = guessKey(row, col);
+  if (shouldSuppressTopNoteClick(key)) {
+    return;
+  }
+
+  clearPendingTopNotePress();
+  handleNoteTap(row, col);
+}
+
+function handleBottomNotePressStart(event, row, col) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.pointerType === "mouse" && event.button !== 0) {
+    return;
+  }
+
+  clearPendingBottomNotePress();
+  const key = guessKey(row, col);
+  const tileRect = event.currentTarget.closest(".cell").getBoundingClientRect();
+  state.pendingBottomNotePress = {
+    key,
+    timerId: window.setTimeout(() => {
+      suppressBottomNoteClick(key);
+      state.pendingBottomNotePress = null;
+      openCornerNoteMenu(row, col, "bottom", tileRect, event.pointerId);
+    }, cornerNotePressDelayMs),
+  };
+}
+
+function handleBottomNotePressEnd() {
+  clearPendingBottomNotePress();
+}
+
+function handleBottomNoteClick(event, row, col) {
+  event.preventDefault();
+  event.stopPropagation();
+
+  const key = guessKey(row, col);
+  if (shouldSuppressBottomNoteClick(key)) {
+    return;
+  }
+
+  clearPendingBottomNotePress();
+
+  if (state.bottomNotes.has(key)) {
+    setBottomNote(row, col, null);
+  }
+}
+
 function handleClueTap(row, col) {
   const key = guessKey(row, col);
   const clue = state.cells[row]?.[col]?.clue;
@@ -1234,7 +1566,12 @@ async function restoreProgress() {
   state.completionAcknowledged = saved.completionAcknowledged;
   if (
     state.timerStartedAt === null &&
-    (saved.moves.length > 0 || saved.hiddenClues.length > 0 || saved.notes.length > 0)
+    (
+      saved.moves.length > 0 ||
+      saved.hiddenClues.length > 0 ||
+      saved.notes.length > 0 ||
+      saved.bottomNotes.length > 0
+    )
   ) {
     state.timerStartedAt = Date.now();
   }
@@ -1262,6 +1599,12 @@ async function restoreProgress() {
         return Boolean(state.cells[row]?.[col]);
       }),
     );
+    state.bottomNotes = new Map(
+      saved.bottomNotes.filter(([key]) => {
+        const [row, col] = key.split(":").map(Number);
+        return Boolean(state.cells[row]?.[col]);
+      }),
+    );
     if (allTilesMarked()) {
       if (state.timerStartedAt === null) {
         state.timerStartedAt = Date.now();
@@ -1277,6 +1620,7 @@ async function restoreProgress() {
   } catch {
     state.moves = [];
     state.notes = new Map();
+    state.bottomNotes = new Map();
     state.hiddenClues = new Set();
     state.timerStartedAt = null;
     state.timerCompletedAt = null;
@@ -1329,8 +1673,11 @@ async function setGuess(row, col, nextGuess) {
 
 async function clearBoard() {
   clearPendingNoteTap();
+  clearPendingTopNotePress();
+  clearPendingBottomNotePress();
   clearPendingClueTap();
   window.clearTimeout(state.flashTimer);
+  closeCornerNoteMenu();
   clearSavedProgress();
   closeGuessModal();
   closeErrorModal();
@@ -1359,7 +1706,12 @@ function toggleClueVisibility(row, col) {
 function canSkipNewPuzzleConfirmation() {
   return (
     allTilesMarked() ||
-    (state.moves.length === 0 && state.hiddenClues.size === 0 && state.notes.size === 0)
+    (
+      state.moves.length === 0 &&
+      state.hiddenClues.size === 0 &&
+      state.notes.size === 0 &&
+      state.bottomNotes.size === 0
+    )
   );
 }
 
@@ -1369,6 +1721,7 @@ function openGuessModal(row, col) {
     return;
   }
 
+  closeCornerNoteMenu();
   state.modalCell = { row, col };
   guessEmojiEl.textContent = emojiForCell(cell);
   guessTitleEl.textContent = cell.name;
@@ -1381,6 +1734,7 @@ function closeGuessModal() {
 }
 
 function openErrorModal(title, message = "") {
+  closeCornerNoteMenu();
   closeGuessModal();
   closeConfirmModal();
   closeFinishModal();
@@ -1395,6 +1749,7 @@ function closeErrorModal() {
 }
 
 function openStartModal() {
+  closeCornerNoteMenu();
   closeGuessModal();
   closeConfirmModal();
   closeErrorModal();
@@ -1501,6 +1856,37 @@ window.addEventListener("keydown", (event) => {
     toggleScoreDebugOverlay();
   }
 });
+window.addEventListener("resize", closeCornerNoteMenu);
+window.addEventListener("scroll", closeCornerNoteMenu, { passive: true });
+window.addEventListener("pointermove", (event) => {
+  if (!state.cornerNoteMenu || state.cornerNoteMenu.pointerId !== event.pointerId) {
+    return;
+  }
+
+  updateCornerNoteMenuActiveColor(cornerNoteColorAtClientY(event.clientY));
+});
+window.addEventListener(
+  "pointerup",
+  (event) => {
+    if (!state.cornerNoteMenu || state.cornerNoteMenu.pointerId !== event.pointerId) {
+      return;
+    }
+
+    finalizeCornerNoteMenu();
+  },
+  true,
+);
+window.addEventListener(
+  "pointercancel",
+  (event) => {
+    if (!state.cornerNoteMenu || state.cornerNoteMenu.pointerId !== event.pointerId) {
+      return;
+    }
+
+    closeCornerNoteMenu();
+  },
+  true,
+);
 guessInnocentButton.addEventListener("click", async () => {
   if (!state.modalCell) {
     return;
