@@ -35,6 +35,7 @@ pub struct ClueScoreTerms {
     pub active_unforced_tiles: usize,
     pub newly_active_unforced_tiles: i32,
     pub active_uncertainty: f64,
+    pub active_uncertainty_jump: f64,
     pub combined_gain: f64,
     pub alone_gain: f64,
     pub synergy_gain: f64,
@@ -229,8 +230,6 @@ impl Layout {
 struct ScoredCandidate {
     clue: Clue,
     solution: SolutionSet,
-    newly_forced: Vec<usize>,
-    forced_unknown: Vec<usize>,
     terms: ClueScoreTerms,
 }
 
@@ -307,10 +306,40 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     while let Some(current_index) = pending.pop() {
         let current_answer = answers[current_index].unwrap();
         let current_clues = collect_clues(&clues);
-        let revealed_only =
-            solve_clues_with_known_mask(&puzzle, &[], known_mask, known_innocent_mask)?;
-        let baseline =
+        let explicit_baseline =
             solve_clues_with_known_mask(&puzzle, &current_clues, known_mask, known_innocent_mask)?;
+
+        if !explicit_baseline.analysis.has_solution {
+            return Ok(None);
+        }
+
+        let (closed_known_mask, closed_known_innocent_mask) = closure_known_masks_from_analysis(
+            &explicit_baseline.analysis,
+            known_mask,
+            known_innocent_mask,
+        );
+        enqueue_forced_closure_indices(
+            rng,
+            &mut answers,
+            &clues,
+            &mut known_mask,
+            &mut known_innocent_mask,
+            &mut pending,
+            &explicit_baseline.analysis,
+            Some(current_index),
+        );
+        let revealed_only = solve_clues_with_known_mask(
+            &puzzle,
+            &[],
+            closed_known_mask,
+            closed_known_innocent_mask,
+        )?;
+        let baseline = solve_clues_with_known_mask(
+            &puzzle,
+            &current_clues,
+            closed_known_mask,
+            closed_known_innocent_mask,
+        )?;
 
         if !revealed_only.analysis.has_solution || !baseline.analysis.has_solution {
             return Ok(None);
@@ -320,7 +349,7 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         let mut candidates = Vec::new();
 
         for _ in 0..MAX_CLUE_ATTEMPTS {
-            let Some(witness) = sample_witness_assignment(rng, &baseline, known_mask) else {
+            let Some(witness) = sample_witness_assignment(rng, &baseline, closed_known_mask) else {
                 return Ok(None);
             };
 
@@ -332,7 +361,12 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
             next_clues.push(candidate.clone());
 
             let solved =
-                solve_clues_with_known_mask(&puzzle, &next_clues, known_mask, known_innocent_mask)?;
+                solve_clues_with_known_mask(
+                    &puzzle,
+                    &next_clues,
+                    closed_known_mask,
+                    closed_known_innocent_mask,
+                )?;
 
             if !solved.analysis.has_solution {
                 continue;
@@ -344,29 +378,29 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 current_answer,
                 &baseline,
                 &solved,
-                known_mask,
+                closed_known_mask,
             );
 
             if require_new_force && newly_forced.is_empty() {
                 continue;
             }
 
-            if known_mask != FULL_MASK && forced_unknown.is_empty() {
+            if closed_known_mask != FULL_MASK && forced_unknown.is_empty() {
                 continue;
             }
 
             let alone = solve_clues_with_known_mask(
                 &puzzle,
                 &[candidate.clone()],
-                known_mask,
-                known_innocent_mask,
+                closed_known_mask,
+                closed_known_innocent_mask,
             )?;
 
             if !alone.analysis.has_solution {
                 continue;
             }
 
-            let standalone_forced = forced_unknown_indices(&alone.analysis, known_mask);
+            let standalone_forced = forced_unknown_indices(&alone.analysis, closed_known_mask);
             let combination_only_forced = newly_forced
                 .iter()
                 .copied()
@@ -405,8 +439,8 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
             let combination_size = minimal_forcing_subset_size(
                 &puzzle,
                 &effective_clues,
-                known_mask,
-                known_innocent_mask,
+                closed_known_mask,
+                closed_known_innocent_mask,
                 &targets,
             )?;
             if let Some(stats) = instrumentation.as_deref_mut() {
@@ -421,14 +455,12 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
                 &solution,
                 &newly_forced,
                 combination_size,
-                known_mask,
+                closed_known_mask,
             );
 
             candidates.push(ScoredCandidate {
                 clue: candidate,
                 solution,
-                newly_forced,
-                forced_unknown,
                 terms,
             });
 
@@ -443,8 +475,6 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         let ScoredCandidate {
             clue: candidate,
             solution,
-            newly_forced,
-            forced_unknown,
             terms,
         } = selected;
         if let Some(stats) = instrumentation.as_deref_mut() {
@@ -459,33 +489,24 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
         generation_score_series.push(clue_score_terms[current_index].clone().unwrap());
         generation_clue_texts.push(clues[current_index].as_ref().unwrap().text());
 
+        enqueue_forced_closure_indices(
+            rng,
+            &mut answers,
+            &clues,
+            &mut known_mask,
+            &mut known_innocent_mask,
+            &mut pending,
+            &analysis,
+            None,
+        );
+
         if known_mask == FULL_MASK {
             continue;
         }
 
-        let next_choices = if !newly_forced.is_empty() {
-            newly_forced
-        } else {
-            forced_unknown
-        };
-
-        let Some(&next_index) = next_choices.choose(rng) else {
+        if pending.is_empty() {
             return Ok(None);
-        };
-
-        let Some(next_answer) = forced_answer_as_answer(forced_answer_at(&analysis, next_index))
-        else {
-            return Ok(None);
-        };
-
-        reveal_answer(
-            &mut answers,
-            &mut known_mask,
-            &mut known_innocent_mask,
-            next_index,
-            next_answer,
-        );
-        pending.push(next_index);
+        }
     }
 
     if known_mask != FULL_MASK || clues.iter().any(Option::is_none) {
@@ -627,6 +648,70 @@ fn reveal_answer(
     } else {
         *known_innocent_mask &= !(1u32 << index);
     }
+}
+
+fn closure_known_masks_from_analysis(
+    analysis: &crate::solver::ClueAnalysis,
+    known_mask: u32,
+    known_innocent_mask: u32,
+) -> (u32, u32) {
+    let mut closed_known_mask = known_mask;
+    let mut closed_known_innocent_mask = known_innocent_mask & known_mask;
+
+    for index in 0..CELL_COUNT {
+        let bit = 1u32 << index;
+        if known_mask & bit != 0 {
+            continue;
+        }
+
+        match forced_answer_at(analysis, index) {
+            ForcedAnswer::Criminal => {
+                closed_known_mask |= bit;
+                closed_known_innocent_mask &= !bit;
+            }
+            ForcedAnswer::Innocent => {
+                closed_known_mask |= bit;
+                closed_known_innocent_mask |= bit;
+            }
+            ForcedAnswer::Neither => {}
+        }
+    }
+
+    (closed_known_mask, closed_known_innocent_mask)
+}
+
+fn enqueue_forced_closure_indices<R: Rng + ?Sized>(
+    rng: &mut R,
+    answers: &mut [Option<Answer>],
+    clues: &[Option<Clue>],
+    known_mask: &mut u32,
+    known_innocent_mask: &mut u32,
+    pending: &mut Vec<usize>,
+    analysis: &crate::solver::ClueAnalysis,
+    exclude_index: Option<usize>,
+) {
+    let mut promoted = Vec::new();
+
+    for index in 0..CELL_COUNT {
+        if Some(index) == exclude_index || clues[index].is_some() {
+            continue;
+        }
+
+        let Some(answer) = forced_answer_as_answer(forced_answer_at(analysis, index)) else {
+            continue;
+        };
+
+        if answers[index].is_none() {
+            reveal_answer(answers, known_mask, known_innocent_mask, index, answer);
+        }
+
+        if !pending.contains(&index) {
+            promoted.push(index);
+        }
+    }
+
+    promoted.shuffle(rng);
+    pending.extend(promoted);
 }
 
 fn sample_clue<R: Rng + ?Sized>(rng: &mut R, layout: &Layout, assignment: u32) -> Option<Clue> {
@@ -1083,7 +1168,9 @@ fn build_clue_score_terms(
     let active_unforced_tiles = active_unforced_tile_count(combined, known_mask);
     let newly_active_unforced_tiles =
         active_unforced_tiles as i32 - baseline_active_unforced as i32;
+    let baseline_active_uncertainty = active_uncertainty(baseline, known_mask);
     let active_uncertainty = active_uncertainty(combined, known_mask);
+    let active_uncertainty_jump = (active_uncertainty - baseline_active_uncertainty).max(0.0);
     let triviality_penalty = triviality_penalty(layout, clue);
     let family_weight = family_weight(clue);
 
@@ -1094,6 +1181,7 @@ fn build_clue_score_terms(
             newly_active_unforced_tiles,
             active_uncertainty,
         )
+        - active_uncertainty_jump_penalty(active_uncertainty_jump)
         + synergy_bonus(synergy_gain, combination_size, standalone_forced)
         + moderate_information_bonus(combined_gain)
         - standalone_force_penalty(standalone_forced)
@@ -1109,6 +1197,7 @@ fn build_clue_score_terms(
         active_unforced_tiles,
         newly_active_unforced_tiles,
         active_uncertainty,
+        active_uncertainty_jump,
         combined_gain,
         alone_gain,
         synergy_gain,
@@ -1143,9 +1232,27 @@ fn active_state_bonus(
     newly_active_unforced_tiles: i32,
     active_uncertainty: f64,
 ) -> f64 {
-    0.18 * active_unforced_tiles as f64
-        + 0.7 * newly_active_unforced_tiles as f64
-        + 0.35 * active_uncertainty.min(8.0)
+    0.08 * active_unforced_tiles as f64
+        + gradual_active_tile_bonus(newly_active_unforced_tiles)
+        + 0.12 * active_uncertainty.min(6.0)
+}
+
+fn gradual_active_tile_bonus(newly_active_unforced_tiles: i32) -> f64 {
+    match newly_active_unforced_tiles {
+        ..=-1 => -0.4,
+        0 => 0.0,
+        1 => 0.5,
+        2 => 1.4,
+        3 => 1.8,
+        4 => 0.8,
+        5 => -0.2,
+        _ => -0.2 - 0.45 * (newly_active_unforced_tiles - 5) as f64,
+    }
+}
+
+fn active_uncertainty_jump_penalty(active_uncertainty_jump: f64) -> f64 {
+    let excess = (active_uncertainty_jump - 1.5).max(0.0);
+    excess * excess * 0.9
 }
 
 fn synergy_bonus(synergy_gain: f64, combination_size: usize, standalone_forced: usize) -> f64 {
@@ -1464,7 +1571,10 @@ mod tests {
     use rand::{SeedableRng, rngs::StdRng};
 
     use crate::{
-        clue::{CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Count, NONSENSE_TEXTS},
+        clue::{
+            CRIMINAL_NONSENSE_TEXTS, CellFilter, CellSelector, Clue, Column, Count, Line,
+            NONSENSE_TEXTS, Parity,
+        },
         geometry::Position,
         solver::{ClueAnalysis, SolutionSet, solve_clues_with_known_mask},
         types::NAMES,
@@ -1472,12 +1582,14 @@ mod tests {
 
     use super::{
         BAKER_ROLE, CELL_COUNT, COLS, ForcedAnswer, GenerateError, GenerationInstrumentation,
-        Layout, ROWS, SID_NAME, active_state_bonus, active_uncertainty, active_unforced_tile_count,
+        Layout, ROWS, SID_NAME, active_state_bonus, active_uncertainty,
+        active_uncertainty_jump_penalty, active_unforced_tile_count, closure_known_masks_from_analysis,
         combination_size_bonus, count_scope_is_too_small, distinct_roles, empty_puzzle,
         exact_count_triviality, family_weight, filter_is_redundant, generate_puzzle_with_rng,
         generate_puzzle_with_rng_and_instrumentation, generate_puzzle_with_seed,
-        minimal_forcing_subset_size, normalize_generated_clue, sample_line_comparison_clue,
-        sample_filter_for_selector, sample_roles, sample_witness_assignment,
+        gradual_active_tile_bonus, minimal_forcing_subset_size, normalize_generated_clue,
+        sample_filter_for_selector, sample_line_comparison_clue, sample_roles,
+        sample_witness_assignment,
     };
 
     fn blank_analysis() -> ClueAnalysis {
@@ -1766,14 +1878,20 @@ mod tests {
         };
 
         for _ in 0..32 {
-            assert_eq!(sample_filter_for_selector(&mut rng, &selector), CellFilter::Any);
+            assert_eq!(
+                sample_filter_for_selector(&mut rng, &selector),
+                CellFilter::Any
+            );
         }
     }
 
     #[test]
     fn singleton_count_scopes_are_too_small() {
         assert!(count_scope_is_too_small(&[Position::new(3, 3)]));
-        assert!(!count_scope_is_too_small(&[Position::new(3, 2), Position::new(3, 3)]));
+        assert!(!count_scope_is_too_small(&[
+            Position::new(3, 2),
+            Position::new(3, 3)
+        ]));
     }
 
     #[test]
@@ -1859,6 +1977,20 @@ mod tests {
     }
 
     #[test]
+    fn active_state_bonus_prefers_gradual_tile_activation() {
+        assert!(gradual_active_tile_bonus(3) > gradual_active_tile_bonus(1));
+        assert!(gradual_active_tile_bonus(3) > gradual_active_tile_bonus(6));
+        assert!(active_state_bonus(4, 3, 2.0) > active_state_bonus(8, 6, 2.0));
+    }
+
+    #[test]
+    fn large_uncertainty_jumps_are_penalized() {
+        assert_eq!(active_uncertainty_jump_penalty(1.5), 0.0);
+        assert!(active_uncertainty_jump_penalty(3.0) > 0.0);
+        assert!(active_uncertainty_jump_penalty(5.0) > active_uncertainty_jump_penalty(3.0));
+    }
+
+    #[test]
     fn minimal_forcing_subset_size_measures_two_clue_dependency() {
         let names = NAMES[..CELL_COUNT]
             .iter()
@@ -1891,6 +2023,66 @@ mod tests {
                 .unwrap();
 
         assert_eq!(subset_size, 2);
+    }
+
+    #[test]
+    fn closure_forced_tiles_count_as_free_context_for_combination_size() {
+        let mut names = (0..CELL_COUNT)
+            .map(|index| format!("Person {index}"))
+            .collect::<Vec<_>>();
+        names[0] = "Albert".to_string();
+        names[4] = "Eddy".to_string();
+        names[8] = "Isaac".to_string();
+        names[16] = "Thrisha".to_string();
+        let roles = (0..CELL_COUNT)
+            .map(|_| "Role".to_string())
+            .collect::<Vec<_>>();
+        let puzzle = empty_puzzle(&names, &roles);
+        let corner_parity = Clue::CountCells {
+            selector: CellSelector::Col { col: Column::A },
+            answer: crate::types::Answer::Criminal,
+            count: Count::Parity(Parity::Even),
+            filter: CellFilter::Corner,
+        };
+        let neighbor_parity = Clue::CountCells {
+            selector: CellSelector::Neighbor {
+                name: "Eddy".to_string(),
+            },
+            answer: crate::types::Answer::Criminal,
+            count: Count::Parity(Parity::Even),
+            filter: CellFilter::Line(Line::Col(Column::A)),
+        };
+        let explicit_known_mask = 1u32 << 16;
+        let explicit_known_innocent_mask = explicit_known_mask;
+        let baseline =
+            solve_clues_with_known_mask(&puzzle, &[corner_parity.clone()], explicit_known_mask, explicit_known_innocent_mask)
+                .unwrap();
+        let (closed_known_mask, closed_known_innocent_mask) = closure_known_masks_from_analysis(
+            &baseline.analysis,
+            explicit_known_mask,
+            explicit_known_innocent_mask,
+        );
+        let clues = vec![corner_parity, neighbor_parity];
+
+        let explicit_subset = minimal_forcing_subset_size(
+            &puzzle,
+            &clues,
+            explicit_known_mask,
+            explicit_known_innocent_mask,
+            &[(8, ForcedAnswer::Innocent)],
+        )
+        .unwrap();
+        let closed_subset = minimal_forcing_subset_size(
+            &puzzle,
+            &clues,
+            closed_known_mask,
+            closed_known_innocent_mask,
+            &[(8, ForcedAnswer::Innocent)],
+        )
+        .unwrap();
+
+        assert_eq!(explicit_subset, 2);
+        assert_eq!(closed_subset, 1);
     }
 
     fn histogram(values: &[usize]) -> BTreeMap<usize, usize> {

@@ -914,11 +914,7 @@ function createCombinedChart(title, metricSeries, clueTexts) {
     labelEl.className = "score-debug-legend-label";
     labelEl.textContent = metric.label;
 
-    const valueEl = document.createElement("span");
-    valueEl.className = "score-debug-legend-value";
-    valueEl.textContent = formatScoreValue(metric.values[metric.values.length - 1] ?? 0);
-
-    itemEl.append(swatchEl, labelEl, valueEl);
+    itemEl.append(swatchEl, labelEl);
     if (key !== "score") {
       itemEl.addEventListener("mouseenter", () => {
         applyScoreMetricFocus(key);
@@ -970,6 +966,7 @@ function renderScoreDebugPanel() {
     ["active_unforced_tiles", "active_unforced_tiles", "#2f6fb4"],
     ["newly_active_unforced_tiles", "newly_active_unforced_tiles", "#1f8a63"],
     ["active_uncertainty", "active_uncertainty", "#9153c6"],
+    ["active_uncertainty_jump", "active_uncertainty_jump", "#b24f86"],
     ["combined_gain", "combined_gain", "#6f58c9"],
     ["alone_gain", "alone_gain", "#8b6b2d"],
     ["synergy_gain", "synergy_gain", "#208a8d"],
