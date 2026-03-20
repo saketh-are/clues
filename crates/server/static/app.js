@@ -2,6 +2,7 @@ const boardEl = document.querySelector("#board");
 const template = document.querySelector("#cell-template");
 const newRandomButton = document.querySelector("#new-random");
 const shareButton = document.querySelector("#share-puzzle");
+document.querySelector("#share-results")?.remove();
 const clearButton = document.querySelector("#clear-board");
 const guessModalEl = document.querySelector("#guess-modal");
 const guessBackdropEl = document.querySelector("#guess-backdrop");
@@ -34,6 +35,7 @@ const cornerNoteMenuEl = document.querySelector("#corner-note-menu");
 const cornerNoteMenuCardEl = document.querySelector("#corner-note-menu-card");
 const cornerNoteOptionEls = [...document.querySelectorAll("#corner-note-menu [data-color]")];
 const progressStoragePrefix = "clues-progress:v1:";
+const sharedLinkStoragePrefix = "clues-shared-link:v2:";
 const noteTapDelayMs = 420;
 const cornerNotePressDelayMs = 420;
 const suppressedNoteClickDelayMs = 260;
@@ -96,6 +98,8 @@ const state = {
   suppressedTopNoteClick: null,
   suppressedBottomNoteClick: null,
   pendingClueTap: null,
+  sharedStoredPuzzleId: null,
+  shareLinkPromise: null,
   shareFeedbackTimer: null,
   finishCopyFeedbackTimer: null,
   timerStartedAt: null,
@@ -219,6 +223,42 @@ function currentPuzzleSource() {
   }
 
   throw new Error("No puzzle is loaded");
+}
+
+function sharedLinkStorageKey(boardSize = currentBoardSize()) {
+  if (state.currentSeed === null) {
+    return null;
+  }
+
+  return `${sharedLinkStoragePrefix}${state.currentSeed}:${boardSize.rows}x${boardSize.cols}`;
+}
+
+function readSharedStoredPuzzleId(boardSize = currentBoardSize()) {
+  const storageKey = sharedLinkStorageKey(boardSize);
+  if (storageKey === null) {
+    return null;
+  }
+
+  try {
+    return normalizeStoredPuzzleId(window.localStorage.getItem(storageKey));
+  } catch {
+    return null;
+  }
+}
+
+function persistSharedStoredPuzzleId(storedPuzzleId, boardSize = currentBoardSize()) {
+  const storageKey = sharedLinkStorageKey(boardSize);
+  if (storageKey === null) {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(storageKey, storedPuzzleId);
+  } catch {}
+}
+
+function storedPuzzleUrl(storedPuzzleId) {
+  return `${window.location.origin}/p/${encodeURIComponent(storedPuzzleId)}`;
 }
 
 function rowLabel(index) {
@@ -475,10 +515,11 @@ function finishGridText() {
     .join("\n");
 }
 
-function finishShareText() {
+async function finishShareText() {
   const completedAt = state.timerCompletedAt ?? Date.now();
   const elapsed = formatResultDuration(completedAt - state.timerStartedAt);
-  return `${elapsed}\n${finishGridText()}\n${window.location.href}`;
+  const shareUrl = await ensureShareableLink();
+  return `${elapsed}\n${finishGridText()}\n${shareUrl}`;
 }
 
 function resetFinishCopyButton() {
@@ -497,7 +538,7 @@ function flashFinishCopyButton(label) {
 }
 
 function openFinishModal() {
-  if (state.timerStartedAt === null) {
+  if (state.timerStartedAt === null || state.timerCompletedAt === null) {
     return;
   }
 
@@ -593,7 +634,71 @@ function completePuzzleIfNeeded() {
 
   state.completionAcknowledged = false;
   persistProgress();
+  syncShareButton();
   openFinishModal();
+}
+
+function defaultShareButtonLabel() {
+  return state.timerCompletedAt === null ? "Share" : "🏆 Share Results";
+}
+
+function syncShareButton() {
+  shareButton.textContent = defaultShareButtonLabel();
+}
+
+async function ensureShareableLink() {
+  if (state.currentStoredPuzzleId !== null) {
+    return storedPuzzleUrl(state.currentStoredPuzzleId);
+  }
+
+  if (state.sharedStoredPuzzleId !== null) {
+    return storedPuzzleUrl(state.sharedStoredPuzzleId);
+  }
+
+  const cachedStoredPuzzleId = readSharedStoredPuzzleId();
+  if (cachedStoredPuzzleId !== null) {
+    state.sharedStoredPuzzleId = cachedStoredPuzzleId;
+    return storedPuzzleUrl(cachedStoredPuzzleId);
+  }
+
+  if (state.currentSeed === null) {
+    return window.location.href;
+  }
+
+  if (state.shareLinkPromise !== null) {
+    return state.shareLinkPromise;
+  }
+
+  const boardSize = currentBoardSize();
+  const params = new URLSearchParams({
+    seed: state.currentSeed,
+    rows: String(boardSize.rows),
+    cols: String(boardSize.cols),
+  });
+
+  state.shareLinkPromise = (async () => {
+    const response = await fetch(`/api/stored-puzzles/generate?${params.toString()}`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({ error: "Failed to create share link" }));
+      throw new Error(error.error || "Failed to create share link");
+    }
+
+    const result = await response.json();
+    const storedPuzzleId = normalizeStoredPuzzleId(result.stored_puzzle_id);
+    if (storedPuzzleId === null) {
+      throw new Error("Failed to create share link");
+    }
+
+    state.sharedStoredPuzzleId = storedPuzzleId;
+    persistSharedStoredPuzzleId(storedPuzzleId, boardSize);
+    return storedPuzzleUrl(storedPuzzleId);
+  })().finally(() => {
+    state.shareLinkPromise = null;
+  });
+
+  return state.shareLinkPromise;
 }
 
 async function loadPuzzle(seed, options = {}) {
@@ -624,6 +729,8 @@ async function loadPuzzle(seed, options = {}) {
   const puzzle = await response.json();
   state.currentSeed = normalizeSeed(puzzle.seed);
   state.currentStoredPuzzleId = normalizeStoredPuzzleId(puzzle.stored_puzzle_id);
+  state.sharedStoredPuzzleId =
+    state.currentStoredPuzzleId ?? readSharedStoredPuzzleId(options.boardSize ?? currentBoardSize());
   state.boardSize = {
     rows: puzzle.rows ?? puzzle.cells.length,
     cols: puzzle.cols ?? puzzle.cells[0]?.length ?? 0,
@@ -654,6 +761,7 @@ async function loadPuzzle(seed, options = {}) {
   state.suppressedBottomNoteClick = null;
   state.cornerNoteMenu = null;
   state.scoreDebugTab = "generated";
+  state.shareLinkPromise = null;
   state.initialRevealed =
     puzzle.cells.flatMap((row, rowIndex) =>
       row.map((cell, colIndex) => ({ cell, rowIndex, colIndex })),
@@ -672,6 +780,7 @@ async function loadPuzzle(seed, options = {}) {
   }
   resetShareButton();
   resetFinishCopyButton();
+  syncShareButton();
   closeGuessModal();
   closeConfirmModal();
   closeErrorModal();
@@ -684,6 +793,8 @@ async function loadPuzzle(seed, options = {}) {
     openErrorModal(restoreResult.error);
     return;
   }
+
+  syncShareButton();
 
   if (allTilesMarked() && state.timerStartedAt !== null && !state.completionAcknowledged) {
     openFinishModal();
@@ -1968,7 +2079,7 @@ function closeStartModal() {
 function resetShareButton() {
   window.clearTimeout(state.shareFeedbackTimer);
   state.shareFeedbackTimer = null;
-  shareButton.textContent = "Share";
+  syncShareButton();
 }
 
 function flashShareButton(label) {
@@ -1976,7 +2087,7 @@ function flashShareButton(label) {
   window.clearTimeout(state.shareFeedbackTimer);
   state.shareFeedbackTimer = window.setTimeout(() => {
     state.shareFeedbackTimer = null;
-    shareButton.textContent = "Share";
+    syncShareButton();
   }, 1200);
 }
 
@@ -2013,12 +2124,18 @@ newRandomButton.addEventListener("click", async () => {
 });
 
 shareButton.addEventListener("click", async () => {
+  if (state.timerCompletedAt !== null) {
+    openFinishModal();
+    return;
+  }
+
   try {
-    await navigator.clipboard.writeText(window.location.href);
+    const shareUrl = await ensureShareableLink();
+    await navigator.clipboard.writeText(shareUrl);
     flashShareButton("Copied");
   } catch (error) {
     flashShareButton("Failed");
-    openErrorModal("Could not copy the link.");
+    openErrorModal("Could not copy the link.", error.message);
   }
 });
 
@@ -2043,10 +2160,11 @@ finishBackdropEl.addEventListener("click", dismissFinishModal);
 finishDismissButton.addEventListener("click", dismissFinishModal);
 finishCopyButton.addEventListener("click", async () => {
   try {
-    await navigator.clipboard.writeText(finishShareText());
+    await navigator.clipboard.writeText(await finishShareText());
     flashFinishCopyButton("Copied");
-  } catch {
+  } catch (error) {
     flashFinishCopyButton("Failed");
+    openErrorModal("Could not copy the results.", error.message);
   }
 });
 scoreDebugEl.addEventListener("click", (event) => {
