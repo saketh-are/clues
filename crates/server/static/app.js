@@ -1656,18 +1656,20 @@ function handleClueTap(row, col) {
     return;
   }
 
-  if (state.pendingClueTap && state.pendingClueTap.key === key) {
-    clearPendingClueTap();
+  const repeatedTap = state.pendingClueTap && state.pendingClueTap.key === key;
+
+  clearPendingClueTap();
+  toggleClueVisibility(row, col);
+
+  if (repeatedTap) {
     flashMentionedTiles(clue);
     return;
   }
 
-  clearPendingClueTap();
   state.pendingClueTap = {
     key,
     timerId: window.setTimeout(() => {
       state.pendingClueTap = null;
-      toggleClueVisibility(row, col);
     }, clueTapDelayMs),
   };
 }
