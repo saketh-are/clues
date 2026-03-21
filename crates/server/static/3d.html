@@ -5,33 +5,44 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clues 3D</title>
     <link rel="stylesheet" href="/styles.css?v=20260321c" />
-    <link rel="stylesheet" href="/styles3d.css?v=20260321a" />
+    <link rel="stylesheet" href="/styles3d.css?v=20260321y" />
   </head>
   <body>
-    <main class="page page-3d">
+    <main class="page">
       <section class="topbar">
         <div class="brand">
           <h1>Clues 3D</h1>
         </div>
 
         <div class="controls">
-          <span id="board-3d-meta" class="three-d-meta"></span>
+          <button id="clear-3d" class="button button-secondary" type="button">
+            Clear
+          </button>
           <button id="new-random-3d" class="button button-secondary" type="button">
             New Puzzle
           </button>
-          <button id="reset-view-3d" class="button button-secondary" type="button">
-            Reset View
+          <button id="share-3d" class="button button-secondary" type="button">
+            Share
           </button>
         </div>
-      </section>
-
-      <section class="three-d-statusbar">
-        <p id="three-d-status" class="three-d-status">Drag to rotate</p>
       </section>
 
       <section id="board-3d-shell" class="board-3d-shell">
         <div id="board-3d-viewport" class="board-3d-viewport">
           <div id="board-3d-scene" class="board-3d-scene" aria-live="polite"></div>
+        </div>
+        <div class="board-3d-overlay">
+          <div class="axis-gizmo-shell" aria-hidden="true">
+            <svg
+              id="axis-gizmo"
+              class="axis-gizmo"
+              viewBox="0 0 120 120"
+              xmlns="http://www.w3.org/2000/svg"
+            ></svg>
+          </div>
+          <button id="reset-view-3d" class="button button-secondary three-d-reset-view" type="button">
+            Reset View
+          </button>
         </div>
       </section>
     </main>
@@ -71,6 +82,110 @@
       </div>
     </div>
 
-    <script src="/app3d.js?v=20260321a" defer></script>
+    <div id="new-puzzle-3d-modal" class="modal" hidden>
+      <div id="new-puzzle-3d-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card new-puzzle-modal-card" role="dialog" aria-modal="true" aria-labelledby="new-puzzle-3d-title">
+        <h2 id="new-puzzle-3d-title" class="modal-title modal-title-error">New Puzzle</h2>
+        <div class="new-puzzle-pickers">
+          <label class="new-puzzle-picker">
+            <span class="new-puzzle-label">Depth</span>
+            <div class="new-puzzle-stepper">
+              <button id="new-puzzle-3d-depth-up" class="button button-secondary new-puzzle-step" type="button">
+                ↑
+              </button>
+              <div
+                id="new-puzzle-3d-depth-value"
+                class="new-puzzle-value"
+                role="spinbutton"
+                tabindex="0"
+                aria-label="Depth"
+                aria-valuemin="1"
+                aria-valuemax="20"
+              ></div>
+              <button id="new-puzzle-3d-depth-down" class="button button-secondary new-puzzle-step" type="button">
+                ↓
+              </button>
+            </div>
+          </label>
+          <label class="new-puzzle-picker">
+            <span class="new-puzzle-label">Rows</span>
+            <div class="new-puzzle-stepper">
+              <button id="new-puzzle-3d-rows-up" class="button button-secondary new-puzzle-step" type="button">
+                ↑
+              </button>
+              <div
+                id="new-puzzle-3d-rows-value"
+                class="new-puzzle-value"
+                role="spinbutton"
+                tabindex="0"
+                aria-label="Rows"
+                aria-valuemin="1"
+                aria-valuemax="20"
+              ></div>
+              <button id="new-puzzle-3d-rows-down" class="button button-secondary new-puzzle-step" type="button">
+                ↓
+              </button>
+            </div>
+          </label>
+          <label class="new-puzzle-picker">
+            <span class="new-puzzle-label">Cols</span>
+            <div class="new-puzzle-stepper">
+              <button id="new-puzzle-3d-cols-up" class="button button-secondary new-puzzle-step" type="button">
+                ↑
+              </button>
+              <div
+                id="new-puzzle-3d-cols-value"
+                class="new-puzzle-value"
+                role="spinbutton"
+                tabindex="0"
+                aria-label="Cols"
+                aria-valuemin="1"
+                aria-valuemax="20"
+              ></div>
+              <button id="new-puzzle-3d-cols-down" class="button button-secondary new-puzzle-step" type="button">
+                ↓
+              </button>
+            </div>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button id="new-puzzle-3d-cancel" class="button button-secondary" type="button">
+            Cancel
+          </button>
+          <button id="new-puzzle-3d-confirm" class="button button-good" type="button">
+            Start
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="finish-modal" class="modal" hidden>
+      <div id="finish-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="finish-title">
+        <h2 id="finish-title" class="modal-title">Puzzle Complete</h2>
+        <p id="finish-message" class="modal-message finish-time"></p>
+        <div class="modal-actions">
+          <button id="finish-copy" class="button button-good" type="button">
+            Copy Result
+          </button>
+          <button id="finish-dismiss" class="button button-secondary" type="button">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="corner-note-menu" class="note-menu" hidden aria-hidden="true">
+      <div id="corner-note-menu-card" class="note-menu-card">
+        <div class="note-menu-option note-yellow" data-color="yellow"></div>
+        <div class="note-menu-option note-red" data-color="red"></div>
+        <div class="note-menu-option note-green" data-color="green"></div>
+        <div class="note-menu-option note-orange" data-color="orange"></div>
+        <div class="note-menu-option note-magenta" data-color="magenta"></div>
+        <div class="note-menu-option note-cyan" data-color="cyan"></div>
+      </div>
+    </div>
+
+    <script src="/app3d.js?v=20260321aq" defer></script>
   </body>
 </html>

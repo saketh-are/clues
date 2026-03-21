@@ -10,9 +10,10 @@ use axum::{
     routing::{get, post},
 };
 use clues_core::{
-    Answer, BoardShape, Clue, ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, ForcedAnswer,
-    GeneratedPuzzle, GeneratedPuzzle3D, Puzzle, Puzzle3D, PuzzleValidationError, StoredPuzzle,
-    Visibility, analyze_revealed_puzzle, analyze_revealed_puzzle_3d,
+    Answer, BoardShape, CellFilter, CellSelector, Clue, ClueScoreTerms, DEFAULT_COLS,
+    DEFAULT_ROWS, ForcedAnswer, GeneratedPuzzle, GeneratedPuzzle3D, Line, PersonGroup,
+    PersonPredicate, Puzzle, Puzzle3D, PuzzleValidationError, StoredPuzzle, Visibility,
+    analyze_revealed_puzzle, analyze_revealed_puzzle_3d,
     generate_puzzle_3d_with_seed_and_size, generate_puzzle_with_seed_and_size,
 };
 use editor::{
@@ -59,6 +60,8 @@ struct PuzzleResponse {
 #[derive(Debug, Serialize)]
 struct Puzzle3DResponse {
     seed: Option<String>,
+    stored_puzzle_id: Option<String>,
+    author: Option<String>,
     depth: u8,
     rows: u8,
     cols: u8,
@@ -71,15 +74,26 @@ struct CellResponse {
     role: String,
     emoji: Option<String>,
     clue: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    clue_highlight_groups: Vec<Vec<HighlightCell3DResponse>>,
     is_nonsense: bool,
     score_terms: Option<ClueScoreTerms>,
     revealed_answer: Option<Answer>,
     revealed: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct HighlightCell3DResponse {
+    layer: usize,
+    row: usize,
+    col: usize,
+}
+
 #[derive(Debug, Serialize)]
 struct GuessResponse {
     clue: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    clue_highlight_groups: Vec<Vec<HighlightCell3DResponse>>,
     is_nonsense: bool,
     score_terms: Option<ClueScoreTerms>,
 }
@@ -101,10 +115,7 @@ struct GuessRequest {
 
 #[derive(Debug, Deserialize)]
 struct Guess3DRequest {
-    seed: String,
-    depth: u8,
-    rows: u8,
-    cols: u8,
+    source: PuzzleSource3D,
     #[serde(default)]
     moves: Vec<AppliedGuess3D>,
     layer: usize,
@@ -126,6 +137,20 @@ struct AppliedGuess3D {
 enum PuzzleSource {
     Generated { seed: String, rows: u8, cols: u8 },
     Stored { stored_puzzle_id: String },
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum PuzzleSource3D {
+    Generated {
+        seed: String,
+        depth: u8,
+        rows: u8,
+        cols: u8,
+    },
+    Stored {
+        stored_puzzle_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -190,12 +215,21 @@ async fn main() {
         .route("/", get(index_html))
         .route("/3d", get(index_3d_html))
         .route("/3d/", get(index_3d_html))
+        .route("/3d/p/{stored_puzzle_id}", get(index_3d_html))
         .route("/edit", get(edit_html))
         .route("/p/{stored_puzzle_id}", get(index_html))
         .route("/api/puzzles/new", get(new_puzzle))
         .route("/api/puzzles/guess", post(guess_cell))
         .route("/api/3d/puzzles/new", get(new_puzzle_3d))
         .route("/api/3d/puzzles/guess", post(guess_cell_3d))
+        .route(
+            "/api/3d/stored-puzzles/generate",
+            post(create_stored_puzzle_3d),
+        )
+        .route(
+            "/api/3d/stored-puzzles/{stored_puzzle_id}",
+            get(load_stored_puzzle_3d),
+        )
         .route("/api/editor/bootstrap", get(editor_bootstrap_handler))
         .route("/api/editor/new", post(new_editor_puzzle))
         .route("/api/editor/describe", post(describe_editor_puzzle))
@@ -268,6 +302,21 @@ async fn create_stored_puzzle(
     let (_, generated) =
         generate_requested_puzzle(params.seed.as_deref(), params.rows, params.cols)?;
     let stored_puzzle_id = save_puzzle_as_stored(&state.stored_puzzles, &generated.puzzle)?;
+
+    Ok(Json(CreateStoredPuzzleResponse { stored_puzzle_id }))
+}
+
+async fn create_stored_puzzle_3d(
+    State(state): State<AppState>,
+    Query(params): Query<NewPuzzleParams>,
+) -> Result<Json<CreateStoredPuzzleResponse>, AppError> {
+    let (_, generated) = generate_requested_puzzle_3d(
+        params.seed.as_deref(),
+        params.depth,
+        params.rows,
+        params.cols,
+    )?;
+    let stored_puzzle_id = save_puzzle_3d_as_stored(&state.stored_puzzles, &generated.puzzle)?;
 
     Ok(Json(CreateStoredPuzzleResponse { stored_puzzle_id }))
 }
@@ -346,6 +395,17 @@ async fn load_stored_puzzle(
     )))
 }
 
+async fn load_stored_puzzle_3d(
+    State(state): State<AppState>,
+    Path(stored_puzzle_id): Path<String>,
+) -> Result<Json<Puzzle3DResponse>, AppError> {
+    let puzzle = load_stored_puzzle_3d_by_id(&state, &stored_puzzle_id)?;
+    Ok(Json(Puzzle3DResponse::from_stored(
+        &stored_puzzle_id,
+        &puzzle,
+    )))
+}
+
 async fn guess_cell(
     State(state): State<AppState>,
     Json(request): Json<GuessRequest>,
@@ -375,6 +435,7 @@ async fn guess_cell(
 
     Ok(Json(GuessResponse {
         clue: puzzle.cells[row][col].clue.text(),
+        clue_highlight_groups: Vec::new(),
         is_nonsense: matches!(
             puzzle.cells[row][col].clue,
             clues_core::Clue::Nonsense { .. }
@@ -383,12 +444,12 @@ async fn guess_cell(
     }))
 }
 
-async fn guess_cell_3d(Json(request): Json<Guess3DRequest>) -> Result<Json<GuessResponse>, AppError> {
+async fn guess_cell_3d(
+    State(state): State<AppState>,
+    Json(request): Json<Guess3DRequest>,
+) -> Result<Json<GuessResponse>, AppError> {
     let Guess3DRequest {
-        seed,
-        depth,
-        rows,
-        cols,
+        source,
         moves,
         layer,
         row,
@@ -396,15 +457,35 @@ async fn guess_cell_3d(Json(request): Json<Guess3DRequest>) -> Result<Json<Guess
         guess,
     } = request;
 
-    let (_, generated) =
-        generate_requested_puzzle_3d(Some(seed.as_str()), Some(depth), Some(rows), Some(cols))?;
-    let mut puzzle = generated.puzzle;
+    let mut puzzle = match source {
+        PuzzleSource3D::Generated {
+            seed,
+            depth,
+            rows,
+            cols,
+        } => {
+            let (_, generated) = generate_requested_puzzle_3d(
+                Some(seed.as_str()),
+                Some(depth),
+                Some(rows),
+                Some(cols),
+            )?;
+            generated.puzzle
+        }
+        PuzzleSource3D::Stored { stored_puzzle_id } => {
+            load_stored_puzzle_3d_by_id(&state, &stored_puzzle_id)?
+        }
+    };
 
     replay_moves_3d(&mut puzzle, &moves)?;
     validate_and_reveal_guess_3d(&mut puzzle, layer, row, col, guess)?;
 
     Ok(Json(GuessResponse {
         clue: puzzle.cells[layer][row][col].clue.text(),
+        clue_highlight_groups: clue_highlight_groups_3d(
+            &puzzle,
+            &puzzle.cells[layer][row][col].clue,
+        ),
         is_nonsense: matches!(puzzle.cells[layer][row][col].clue, clues_core::Clue::Nonsense { .. }),
         score_terms: None,
     }))
@@ -442,18 +523,12 @@ fn generate_requested_puzzle_3d(
 }
 
 fn load_stored_puzzle_by_id(state: &AppState, stored_puzzle_id: &str) -> Result<Puzzle, AppError> {
-    let encoded = state
-        .stored_puzzles
-        .get_pinned(stored_puzzle_db_key(stored_puzzle_id))
-        .map_err(|error| AppError::internal(format!("failed to read stored puzzle: {error}")))?
-        .ok_or_else(|| AppError::not_found("stored puzzle not found"))?;
-    let stored_puzzle: StoredPuzzle = serde_json::from_slice(&encoded).map_err(|error| {
-        AppError::internal(format!(
-            "failed to decode stored puzzle {stored_puzzle_id}: {error}"
-        ))
-    })?;
+    let stored_puzzle = load_stored_puzzle_document_by_id(state, stored_puzzle_id)?;
     let puzzle = match stored_puzzle {
         StoredPuzzle::V1(puzzle) => puzzle,
+        StoredPuzzle::V1ThreeD(_) => {
+            return Err(AppError::bad_request("stored puzzle is a 3d puzzle"));
+        }
     };
 
     puzzle
@@ -462,10 +537,49 @@ fn load_stored_puzzle_by_id(state: &AppState, stored_puzzle_id: &str) -> Result<
     Ok(puzzle)
 }
 
+fn load_stored_puzzle_3d_by_id(
+    state: &AppState,
+    stored_puzzle_id: &str,
+) -> Result<Puzzle3D, AppError> {
+    let stored_puzzle = load_stored_puzzle_document_by_id(state, stored_puzzle_id)?;
+    let puzzle = match stored_puzzle {
+        StoredPuzzle::V1(_) => return Err(AppError::bad_request("stored puzzle is a 2d puzzle")),
+        StoredPuzzle::V1ThreeD(puzzle) => puzzle,
+    };
+
+    puzzle
+        .validate()
+        .map_err(map_stored_puzzle_validation_error)?;
+    Ok(puzzle)
+}
+
+fn load_stored_puzzle_document_by_id(
+    state: &AppState,
+    stored_puzzle_id: &str,
+) -> Result<StoredPuzzle, AppError> {
+    let encoded = state
+        .stored_puzzles
+        .get_pinned(stored_puzzle_db_key(stored_puzzle_id))
+        .map_err(|error| AppError::internal(format!("failed to read stored puzzle: {error}")))?
+        .ok_or_else(|| AppError::not_found("stored puzzle not found"))?;
+    serde_json::from_slice(&encoded).map_err(|error| {
+        AppError::internal(format!(
+            "failed to decode stored puzzle {stored_puzzle_id}: {error}"
+        ))
+    })
+}
+
 fn save_puzzle_as_stored(db: &DB, puzzle: &Puzzle) -> Result<String, AppError> {
-    let stored_puzzle = StoredPuzzle::from(puzzle);
+    save_stored_puzzle(db, &StoredPuzzle::from(puzzle))
+}
+
+fn save_puzzle_3d_as_stored(db: &DB, puzzle: &Puzzle3D) -> Result<String, AppError> {
+    save_stored_puzzle(db, &StoredPuzzle::from(puzzle))
+}
+
+fn save_stored_puzzle(db: &DB, stored_puzzle: &StoredPuzzle) -> Result<String, AppError> {
     let stored_puzzle_id = generate_stored_puzzle_id(db)?;
-    let encoded = serde_json::to_vec(&stored_puzzle)
+    let encoded = serde_json::to_vec(stored_puzzle)
         .map_err(|error| AppError::internal(format!("failed to encode stored puzzle: {error}")))?;
 
     db.put(stored_puzzle_db_key(&stored_puzzle_id), encoded)
@@ -667,6 +781,8 @@ impl Puzzle3DResponse {
     fn from_generated(seed: u64, generated: &GeneratedPuzzle3D) -> Self {
         Self {
             seed: Some(format_seed(seed)),
+            stored_puzzle_id: None,
+            author: None,
             depth: generated.puzzle.cells.len() as u8,
             rows: generated
                 .puzzle
@@ -681,12 +797,28 @@ impl Puzzle3DResponse {
                 .and_then(|layer| layer.first())
                 .map(|row| row.len())
                 .unwrap_or_default() as u8,
-            cells: generated
-                .puzzle
+            cells: cell_responses_3d(&generated.puzzle),
+        }
+    }
+
+    fn from_stored(stored_puzzle_id: &str, puzzle: &Puzzle3D) -> Self {
+        Self {
+            seed: None,
+            stored_puzzle_id: Some(stored_puzzle_id.to_string()),
+            author: puzzle.author.clone(),
+            depth: puzzle.cells.len() as u8,
+            rows: puzzle
                 .cells
-                .iter()
-                .map(|layer| layer.iter().map(|row| cell_responses_from_row(row, None)).collect())
-                .collect(),
+                .first()
+                .map(|layer| layer.len())
+                .unwrap_or_default() as u8,
+            cols: puzzle
+                .cells
+                .first()
+                .and_then(|layer| layer.first())
+                .map(|row| row.len())
+                .unwrap_or_default() as u8,
+            cells: cell_responses_3d(puzzle),
         }
     }
 }
@@ -711,6 +843,7 @@ fn cell_responses(
                     } else {
                         None
                     },
+                    clue_highlight_groups: Vec::new(),
                     is_nonsense: cell.state == Visibility::Revealed
                         && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
                     score_terms: if cell.state == Visibility::Revealed {
@@ -730,31 +863,186 @@ fn cell_responses(
         .collect()
 }
 
-fn cell_responses_from_row(
-    row: &[clues_core::Cell],
-    clue_score_terms: Option<&[ClueScoreTerms]>,
-) -> Vec<CellResponse> {
-    row.iter()
-        .enumerate()
-        .map(|(col_index, cell)| CellResponse {
-            name: cell.name.clone(),
-            role: cell.role.clone(),
-            emoji: cell.emoji.clone(),
-            clue: if cell.state == Visibility::Revealed {
-                Some(cell.clue.text())
-            } else {
-                None
-            },
-            is_nonsense: cell.state == Visibility::Revealed
-                && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
-            score_terms: clue_score_terms.map(|row_scores| row_scores[col_index].clone()),
-            revealed_answer: if cell.state == Visibility::Revealed {
-                Some(cell.answer)
-            } else {
-                None
-            },
-            revealed: cell.state == Visibility::Revealed,
+fn cell_responses_3d(puzzle: &Puzzle3D) -> Vec<Vec<Vec<CellResponse>>> {
+    puzzle
+        .cells
+        .iter()
+        .map(|layer| {
+            layer
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| CellResponse {
+                            name: cell.name.clone(),
+                            role: cell.role.clone(),
+                            emoji: cell.emoji.clone(),
+                            clue: if cell.state == Visibility::Revealed {
+                                Some(cell.clue.text())
+                            } else {
+                                None
+                            },
+                            clue_highlight_groups: if cell.state == Visibility::Revealed {
+                                clue_highlight_groups_3d(puzzle, &cell.clue)
+                            } else {
+                                Vec::new()
+                            },
+                            is_nonsense: cell.state == Visibility::Revealed
+                                && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
+                            score_terms: None,
+                            revealed_answer: if cell.state == Visibility::Revealed {
+                                Some(cell.answer)
+                            } else {
+                                None
+                            },
+                            revealed: cell.state == Visibility::Revealed,
+                        })
+                        .collect()
+                })
+                .collect()
         })
+        .collect()
+}
+
+fn push_highlight_line(lines: &mut Vec<Line>, line: Line) {
+    if !lines.contains(&line) {
+        lines.push(line);
+    }
+}
+
+fn collect_selector_highlight_lines(lines: &mut Vec<Line>, selector: &CellSelector) {
+    match selector {
+        CellSelector::Layer { layer } => push_highlight_line(lines, Line::Layer(*layer)),
+        CellSelector::Row { row } => push_highlight_line(lines, Line::Row(*row)),
+        CellSelector::Col { col } => push_highlight_line(lines, Line::Col(*col)),
+        CellSelector::Board
+        | CellSelector::Neighbor { .. }
+        | CellSelector::Direction { .. }
+        | CellSelector::Between { .. }
+        | CellSelector::SharedNeighbor { .. } => {}
+    }
+}
+
+fn collect_filter_highlight_lines(lines: &mut Vec<Line>, filter: &CellFilter) {
+    if let CellFilter::Line(line) = filter {
+        push_highlight_line(lines, *line);
+    }
+}
+
+fn collect_group_highlight_lines(lines: &mut Vec<Line>, group: &PersonGroup) {
+    match group {
+        PersonGroup::Line { line } => push_highlight_line(lines, *line),
+        PersonGroup::Filter { filter } => collect_filter_highlight_lines(lines, filter),
+        PersonGroup::SelectedCells {
+            selector, filter, ..
+        } => {
+            collect_selector_highlight_lines(lines, selector);
+            collect_filter_highlight_lines(lines, filter);
+        }
+        PersonGroup::Any | PersonGroup::Role { .. } => {}
+    }
+}
+
+fn collect_predicate_highlight_lines(lines: &mut Vec<Line>, predicate: &PersonPredicate) {
+    if let PersonPredicate::Neighbor { filter, .. } = predicate {
+        collect_filter_highlight_lines(lines, filter);
+    }
+}
+
+fn line_cells_3d(puzzle: &Puzzle3D, line: Line) -> Vec<HighlightCell3DResponse> {
+    match line {
+        Line::Layer(layer) => puzzle
+            .cells
+            .get(layer as usize)
+            .into_iter()
+            .flat_map(|layer_cells| {
+                layer_cells.iter().enumerate().flat_map(move |(row_index, row)| {
+                    row.iter().enumerate().map(move |(col_index, _)| HighlightCell3DResponse {
+                        layer: layer as usize,
+                        row: row_index,
+                        col: col_index,
+                    })
+                })
+            })
+            .collect(),
+        Line::Row(row) => puzzle
+            .cells
+            .iter()
+            .enumerate()
+            .flat_map(move |(layer_index, layer_cells)| {
+                layer_cells
+                    .get(row as usize)
+                    .into_iter()
+                    .flat_map(move |row_cells| {
+                        row_cells.iter().enumerate().map(move |(col_index, _)| {
+                            HighlightCell3DResponse {
+                                layer: layer_index,
+                                row: row as usize,
+                                col: col_index,
+                            }
+                        })
+                    })
+            })
+            .collect(),
+        Line::Col(col) => puzzle
+            .cells
+            .iter()
+            .enumerate()
+            .flat_map(move |(layer_index, layer_cells)| {
+                layer_cells.iter().enumerate().filter_map(move |(row_index, row_cells)| {
+                    row_cells
+                        .get(col.index() as usize)
+                        .map(|_| HighlightCell3DResponse {
+                            layer: layer_index,
+                            row: row_index,
+                            col: col.index() as usize,
+                        })
+                })
+            })
+            .collect(),
+    }
+}
+
+fn clue_highlight_groups_3d(puzzle: &Puzzle3D, clue: &Clue) -> Vec<Vec<HighlightCell3DResponse>> {
+    let mut lines = Vec::new();
+
+    match clue {
+        Clue::CountCells {
+            selector, filter, ..
+        }
+        | Clue::NamedCountCells {
+            selector, filter, ..
+        } => {
+            collect_selector_highlight_lines(&mut lines, selector);
+            collect_filter_highlight_lines(&mut lines, filter);
+        }
+        Clue::Connected { line, .. } => {
+            push_highlight_line(&mut lines, *line);
+        }
+        Clue::LineComparison {
+            first_line,
+            second_line,
+            ..
+        } => {
+            push_highlight_line(&mut lines, *first_line);
+            push_highlight_line(&mut lines, *second_line);
+        }
+        Clue::Quantified {
+            group, predicate, ..
+        } => {
+            collect_group_highlight_lines(&mut lines, group);
+            collect_predicate_highlight_lines(&mut lines, predicate);
+        }
+        Clue::Nonsense { .. }
+        | Clue::Declaration { .. }
+        | Clue::DirectRelation { .. }
+        | Clue::RoleCount { .. }
+        | Clue::RolesComparison { .. } => {}
+    }
+
+    lines
+        .into_iter()
+        .map(|line| line_cells_3d(puzzle, line))
+        .filter(|group| !group.is_empty())
         .collect()
 }
 

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::puzzle::Puzzle;
+use crate::puzzle::{Puzzle, Puzzle3D};
 
 /// Versioned persistence entrypoint for authored puzzles.
 ///
@@ -11,11 +11,18 @@ use crate::puzzle::Puzzle;
 #[serde(tag = "version", content = "puzzle", rename_all = "snake_case")]
 pub enum StoredPuzzle {
     V1(Puzzle),
+    V1ThreeD(Puzzle3D),
 }
 
 impl From<&Puzzle> for StoredPuzzle {
     fn from(puzzle: &Puzzle) -> Self {
         Self::V1(puzzle.clone())
+    }
+}
+
+impl From<&Puzzle3D> for StoredPuzzle {
+    fn from(puzzle: &Puzzle3D) -> Self {
+        Self::V1ThreeD(puzzle.clone())
     }
 }
 
@@ -25,7 +32,7 @@ mod tests {
 
     use crate::{
         clue::{CellFilter, CellSelector, Clue, Count, Direction},
-        puzzle::{Cell, Puzzle, PuzzleValidationError, RenamePuzzleCellError, Visibility},
+        puzzle::{Cell, Puzzle, Puzzle3D, PuzzleValidationError, RenamePuzzleCellError, Visibility},
         types::Answer,
     };
 
@@ -199,6 +206,41 @@ mod tests {
         let stored = StoredPuzzle::from(&puzzle);
 
         assert_eq!(stored, StoredPuzzle::V1(puzzle));
+    }
+
+    #[test]
+    fn stored_puzzle_round_trips_runtime_puzzle_3d() {
+        let puzzle = Puzzle3D {
+            author: None,
+            cells: vec![vec![vec![
+                Cell {
+                    name: "Ada".to_string(),
+                    role: "Detective".to_string(),
+                    emoji: None,
+                    clue: Clue::Nonsense {
+                        text: "Hmm".to_string(),
+                    },
+                    answer: Answer::Criminal,
+                    state: Visibility::Hidden,
+                },
+                Cell {
+                    name: "Ben".to_string(),
+                    role: "Baker".to_string(),
+                    emoji: None,
+                    clue: Clue::DirectRelation {
+                        name: "Ada".to_string(),
+                        answer: Answer::Criminal,
+                        direction: Direction::Left,
+                    },
+                    answer: Answer::Innocent,
+                    state: Visibility::Revealed,
+                },
+            ]]],
+        };
+
+        let stored = StoredPuzzle::from(&puzzle);
+
+        assert_eq!(stored, StoredPuzzle::V1ThreeD(puzzle));
     }
 
     #[test]
