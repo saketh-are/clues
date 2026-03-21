@@ -118,6 +118,13 @@
   gap: 0.2rem;
 }
 
+.editor-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.48rem;
+  min-width: 0;
+}
+
 .editor-prompt-bar {
   min-height: 2.4rem;
   max-height: 2.4rem;
@@ -150,6 +157,10 @@
   flex: 0 0 12rem;
   width: 12rem;
   max-width: 12rem;
+}
+
+.editor-brand-author-control {
+  margin-left: 0.1rem;
 }
 
 .editor-size-label {
@@ -610,7 +621,7 @@
     grid-template-columns: 1fr;
     height: auto;
     align-content: start;
-    gap: 0.72rem;
+    gap: 0;
   }
 
   .editor-sidebar {
@@ -638,6 +649,13 @@
     row-gap: 0.14rem;
   }
 
+  .editor-brand {
+    width: 100%;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.28rem 0.42rem;
+  }
+
   .editor-controls {
     width: 100%;
     justify-content: flex-start;
@@ -646,6 +664,13 @@
 
   .editor-author-control {
     flex-basis: 100%;
+  }
+
+  .editor-brand-author-control {
+    flex-basis: auto;
+    width: min(100%, 11rem);
+    max-width: 11rem;
+    margin-left: 0;
   }
 
   .editor-prompt-bar {
@@ -662,8 +687,7 @@
   }
 
   .editor-board-shell {
-    padding-top: 0;
-    padding-inline: 0;
+    padding: 0;
   }
 
   .editor-panel {

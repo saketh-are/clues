@@ -6,7 +6,7 @@ use clues_core::{
     clue::{CRIMINAL_NONSENSE_TEXTS, NONSENSE_TEXTS, PersonGroup},
     suggest_clue_for_known_tile,
 };
-use rand::{Rng, SeedableRng, rngs::StdRng, seq::SliceRandom, thread_rng};
+use rand::{seq::SliceRandom, thread_rng};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_NONSENSE_TEXT_CHARS: usize = 140;
@@ -81,10 +81,17 @@ pub struct EditorStateResponse {
     pub share_ready: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorProgressionStep {
+    pub kind: String,
+    pub row: usize,
+    pub col: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct EditorGenerateResponse {
-    pub state: EditorStateResponse,
-    pub added_clues: Vec<EditorPosition>,
+pub struct EditorOpenResponse {
+    pub draft: EditorDraftPuzzle,
+    pub progression: Vec<EditorProgressionStep>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -234,6 +241,12 @@ pub fn draft_from_puzzle(puzzle: &Puzzle) -> Result<EditorDraftPuzzle, EditorErr
         cells,
         initial_reveal: Some(initial_reveal),
     })
+}
+
+pub fn open_from_puzzle(puzzle: &Puzzle) -> Result<EditorOpenResponse, EditorError> {
+    let draft = draft_from_puzzle(puzzle)?;
+    let progression = progression_from_complete_draft(&draft)?;
+    Ok(EditorOpenResponse { draft, progression })
 }
 
 pub fn apply_action(
@@ -484,64 +497,6 @@ pub fn suggest_clue(draft: EditorDraftPuzzle, row: usize, col: usize) -> Result<
     .ok_or_else(|| {
         EditorError::conflict("no generator-style clue suggestion was found for that tile")
     })
-}
-
-pub fn generate_remaining_clues(
-    draft: EditorDraftPuzzle,
-) -> Result<EditorGenerateResponse, EditorError> {
-    let mut rng = StdRng::from_entropy();
-    generate_remaining_clues_with_rng(draft, &mut rng)
-}
-
-fn generate_remaining_clues_with_rng<R: Rng + ?Sized>(
-    mut draft: EditorDraftPuzzle,
-    rng: &mut R,
-) -> Result<EditorGenerateResponse, EditorError> {
-    let mut added_clues = Vec::new();
-
-    loop {
-        let state = describe_draft(draft.clone())?;
-        if state.share_ready {
-            return Ok(EditorGenerateResponse { state, added_clues });
-        }
-
-        let mut targets = state.next_clue_targets.clone();
-        if targets.is_empty() {
-            return Err(EditorError::conflict(
-                "the draft cannot be completed from its current state",
-            ));
-        }
-        targets.shuffle(rng);
-
-        let mut next_draft = None;
-        for target in targets {
-            let Ok(clue) = suggest_clue(draft.clone(), target.row, target.col) else {
-                continue;
-            };
-            let Ok(response) = apply_action(
-                draft.clone(),
-                EditorAction::AddClue {
-                    row: target.row,
-                    col: target.col,
-                    clue,
-                },
-            ) else {
-                continue;
-            };
-
-            added_clues.push(target);
-            next_draft = Some(response.draft);
-            break;
-        }
-
-        let Some(updated_draft) = next_draft else {
-            return Err(EditorError::conflict(
-                "could not generate the remaining clues from this draft",
-            ));
-        };
-
-        draft = updated_draft;
-    }
 }
 
 pub fn finalize_draft(draft: &EditorDraftPuzzle) -> Result<Puzzle, EditorError> {
@@ -853,6 +808,47 @@ impl EditorDraftPuzzle {
         (known_mask, known_innocent_mask)
     }
 
+    fn clue_presence_mask(&self) -> u32 {
+        let cols = self
+            .cells
+            .first()
+            .map(|cells| cells.len())
+            .unwrap_or_default();
+        let mut clue_mask = 0u32;
+
+        for (row_index, row) in self.cells.iter().enumerate() {
+            for (col_index, cell) in row.iter().enumerate() {
+                if cell.clue.is_some() {
+                    clue_mask |= 1u32 << (row_index * cols + col_index);
+                }
+            }
+        }
+
+        clue_mask
+    }
+
+    fn empty_authoring_copy(&self) -> Self {
+        Self {
+            author: self.author.clone(),
+            cells: self
+                .cells
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|cell| EditorDraftCell {
+                            name: cell.name.clone(),
+                            role: cell.role.clone(),
+                            emoji: cell.emoji.clone(),
+                            answer: None,
+                            clue: None,
+                        })
+                        .collect()
+                })
+                .collect(),
+            initial_reveal: None,
+        }
+    }
+
     fn to_progress_puzzle(&self) -> Puzzle {
         Puzzle {
             author: self.author.clone(),
@@ -989,6 +985,101 @@ fn collect_referenced_roles(clue: &Clue, referenced_roles: &mut HashSet<String>)
     }
 }
 
+fn progression_from_complete_draft(
+    completed_draft: &EditorDraftPuzzle,
+) -> Result<Vec<EditorProgressionStep>, EditorError> {
+    completed_draft.validate_structure()?;
+    if !completed_draft.is_complete() {
+        return Err(EditorError::bad_request(
+            "only complete playable puzzles can be opened with clue progression",
+        ));
+    }
+
+    let initial_reveal = completed_draft.initial_reveal.ok_or_else(|| {
+        EditorError::bad_request("playable puzzle must have a revealed starting tile")
+    })?;
+    let initial_answer = completed_draft
+        .cell(initial_reveal.row, initial_reveal.col)
+        .and_then(|cell| cell.answer)
+        .ok_or_else(|| EditorError::bad_request("starting tile must have an answer"))?;
+    let mut authoring_draft = completed_draft.empty_authoring_copy();
+    authoring_draft.initial_reveal = Some(initial_reveal);
+    authoring_draft
+        .cell_mut(initial_reveal.row, initial_reveal.col)
+        .ok_or_else(|| EditorError::bad_request("starting tile is out of bounds"))?
+        .answer = Some(initial_answer);
+
+    let mut progression = Vec::new();
+    let mut failed_masks = HashSet::new();
+    if build_progression_steps(
+        completed_draft,
+        authoring_draft,
+        &mut progression,
+        &mut failed_masks,
+    )? {
+        Ok(progression)
+    } else {
+        Err(EditorError::conflict(
+            "could not recover a valid clue order for this playable puzzle",
+        ))
+    }
+}
+
+fn build_progression_steps(
+    completed_draft: &EditorDraftPuzzle,
+    current_draft: EditorDraftPuzzle,
+    progression: &mut Vec<EditorProgressionStep>,
+    failed_masks: &mut HashSet<u32>,
+) -> Result<bool, EditorError> {
+    if current_draft.is_complete() {
+        return Ok(true);
+    }
+
+    let clue_mask = current_draft.clue_presence_mask();
+    if failed_masks.contains(&clue_mask) {
+        return Ok(false);
+    }
+
+    let state = describe_draft(current_draft.clone())?;
+    let mut next_targets = state.next_clue_targets;
+    next_targets.sort_by_key(|position| {
+        let clue = completed_draft
+            .cell(position.row, position.col)
+            .and_then(|cell| cell.clue.as_ref());
+        let nonsense_rank = usize::from(matches!(clue, Some(Clue::Nonsense { .. })));
+        (nonsense_rank, position.row, position.col)
+    });
+
+    for target in next_targets {
+        let Some(clue) = completed_draft
+            .cell(target.row, target.col)
+            .and_then(|cell| cell.clue.clone())
+        else {
+            continue;
+        };
+
+        let Ok(next_state) = apply_action(
+            current_draft.clone(),
+            EditorAction::AddClue {
+                row: target.row,
+                col: target.col,
+                clue,
+            },
+        ) else {
+            continue;
+        };
+
+        progression.push(EditorProgressionStep::add_clue(target.row, target.col));
+        if build_progression_steps(completed_draft, next_state.draft, progression, failed_masks)? {
+            return Ok(true);
+        }
+        progression.pop();
+    }
+
+    failed_masks.insert(clue_mask);
+    Ok(false)
+}
+
 fn validate_playable_progression(puzzle: &mut Puzzle) -> Result<(), EditorError> {
     loop {
         let analysis = analyze_revealed_puzzle(puzzle).map_err(|error| {
@@ -1032,6 +1123,16 @@ fn validate_playable_progression(puzzle: &mut Puzzle) -> Result<(), EditorError>
     }
 }
 
+impl EditorProgressionStep {
+    fn add_clue(row: usize, col: usize) -> Self {
+        Self {
+            kind: "add_clue".to_string(),
+            row,
+            col,
+        }
+    }
+}
+
 fn map_puzzle_validation_error(error: PuzzleValidationError) -> EditorError {
     match error {
         PuzzleValidationError::DuplicateName(_) => {
@@ -1050,10 +1151,7 @@ mod tests {
         types::Answer,
     };
 
-    use super::{
-        EditorAction, EditorDraftCell, EditorDraftPuzzle, EditorPosition, finalize_draft,
-        generate_remaining_clues,
-    };
+    use super::{EditorAction, EditorDraftCell, EditorDraftPuzzle, EditorPosition, finalize_draft};
 
     fn simple_draft() -> EditorDraftPuzzle {
         EditorDraftPuzzle {
@@ -1253,6 +1351,38 @@ mod tests {
     }
 
     #[test]
+    fn open_from_puzzle_reconstructs_a_removable_clue_progression() {
+        let generated = generate_puzzle_with_seed_and_size(7, BoardShape::new(2, 2)).unwrap();
+        let opened = super::open_from_puzzle(&generated.puzzle).unwrap();
+
+        assert_eq!(opened.progression.len(), 4);
+
+        let initial_reveal = opened.draft.initial_reveal.unwrap();
+        let initial_answer = opened.draft.cells[initial_reveal.row][initial_reveal.col]
+            .answer
+            .unwrap();
+        let mut replay = opened.draft.empty_authoring_copy();
+        replay.initial_reveal = Some(initial_reveal);
+        replay.cells[initial_reveal.row][initial_reveal.col].answer = Some(initial_answer);
+
+        for step in &opened.progression {
+            let clue = opened.draft.cells[step.row][step.col].clue.clone().unwrap();
+            replay = super::apply_action(
+                replay,
+                EditorAction::AddClue {
+                    row: step.row,
+                    col: step.col,
+                    clue,
+                },
+            )
+            .unwrap()
+            .draft;
+        }
+
+        assert_eq!(replay, opened.draft);
+    }
+
+    #[test]
     fn only_nonsense_is_allowed_once_all_remaining_tiles_are_forced() {
         let generated = generate_puzzle_with_seed_and_size(7, BoardShape::new(2, 2)).unwrap();
         let mut initial_reveal = None;
@@ -1343,48 +1473,5 @@ mod tests {
                 text: "updated".to_string(),
             })
         );
-    }
-
-    #[test]
-    fn generate_remaining_clues_can_finish_a_partial_draft() {
-        let generated = generate_puzzle_with_seed_and_size(7, BoardShape::new(2, 2)).unwrap();
-        let mut initial_reveal = None;
-        let draft = EditorDraftPuzzle {
-            author: None,
-            cells: generated
-                .puzzle
-                .cells
-                .iter()
-                .enumerate()
-                .map(|(row_index, row)| {
-                    row.iter()
-                        .enumerate()
-                        .map(|(col_index, cell)| {
-                            if cell.state == clues_core::Visibility::Revealed {
-                                initial_reveal = Some(EditorPosition {
-                                    row: row_index,
-                                    col: col_index,
-                                });
-                            }
-
-                            EditorDraftCell {
-                                name: cell.name.clone(),
-                                role: cell.role.clone(),
-                                emoji: cell.emoji.clone(),
-                                answer: (cell.state == clues_core::Visibility::Revealed)
-                                    .then_some(cell.answer),
-                                clue: None,
-                            }
-                        })
-                        .collect()
-                })
-                .collect(),
-            initial_reveal,
-        };
-
-        let response = generate_remaining_clues(draft).unwrap();
-
-        assert!(response.state.share_ready);
-        assert_eq!(response.added_clues.len(), 4);
     }
 }

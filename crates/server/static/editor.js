@@ -1987,8 +1987,8 @@ function currentClueValidationContext(view = selectedCellView()) {
     clue,
   };
   const draft =
-    isLastAddedClueTile(view) && state.progression.length > 0
-      ? revertProgressionDraft(state.response.draft, lastProgressionAction())
+    isLastAddedClueTile(view) && lastClueProgressionIndex() >= 0
+      ? revertProgressionDraft(state.response.draft, lastClueProgressionAction())
       : state.response.draft;
   return {
     draft,
@@ -2110,8 +2110,19 @@ function summarizeProgressionAction(action) {
   };
 }
 
-function lastProgressionAction() {
-  return state.progression.at(-1) ?? null;
+function lastClueProgressionIndex() {
+  for (let index = state.progression.length - 1; index >= 0; index -= 1) {
+    if (state.progression[index]?.kind === "add_clue") {
+      return index;
+    }
+  }
+
+  return -1;
+}
+
+function lastClueProgressionAction() {
+  const index = lastClueProgressionIndex();
+  return index >= 0 ? state.progression[index] : null;
 }
 
 function isLastAddedClueTile(view) {
@@ -2119,7 +2130,7 @@ function isLastAddedClueTile(view) {
     return false;
   }
 
-  const lastAction = lastProgressionAction();
+  const lastAction = lastClueProgressionAction();
   return (
     lastAction?.kind === "add_clue" &&
     lastAction.row === view.row &&
@@ -2218,7 +2229,7 @@ function restoreSavedEditorState(saved) {
         .map((action) => summarizeProgressionAction(action))
         .filter(
           (action) =>
-            (action.kind === "set_initial_reveal" || action.kind === "add_clue") &&
+            action.kind === "add_clue" &&
             Number.isInteger(action.row) &&
             Number.isInteger(action.col),
         )
@@ -2317,13 +2328,6 @@ async function requestSuggestedClue(draft, row, col) {
   });
 }
 
-async function requestGenerateRemainingClues(draft) {
-  return fetchJson("/api/editor/generate-remaining", {
-    method: "POST",
-    body: JSON.stringify({ draft }),
-  });
-}
-
 function populateSizeControls() {
   const validCols = Math.max(1, Math.floor(maxPublicCellCount / state.pendingBoardSize.rows));
   if (state.pendingBoardSize.cols > validCols) {
@@ -2403,7 +2407,9 @@ async function applyUndoableAction(action) {
 
   try {
     const response = await requestApplyAction(state.response.draft, action);
-    state.progression.push(summarizeProgressionAction(action));
+    if (action.kind === "add_clue") {
+      state.progression.push(summarizeProgressionAction(action));
+    }
     state.response = response;
     state.isEditingDetails = false;
     state.editDraft = null;
@@ -2453,13 +2459,6 @@ function revertProgressionDraft(draft, action) {
     throw new Error("cannot undo a change for a missing tile");
   }
 
-  if (action.kind === "set_initial_reveal") {
-    previous.initial_reveal = null;
-    cell.answer = null;
-    cell.clue = null;
-    return previous;
-  }
-
   if (action.kind === "add_clue") {
     const isInitialReveal =
       previous.initial_reveal?.row === action.row &&
@@ -2475,17 +2474,22 @@ function revertProgressionDraft(draft, action) {
 }
 
 async function rewriteLastClue(action) {
-  if (!state.response || state.progression.length === 0) {
+  if (!state.response) {
     return;
   }
 
-  const lastAction = lastProgressionAction();
+  const lastIndex = lastClueProgressionIndex();
+  if (lastIndex < 0) {
+    return;
+  }
+
+  const lastAction = state.progression[lastIndex];
   const baseDraft = revertProgressionDraft(state.response.draft, lastAction);
   setBusy(true);
 
   try {
     state.response = await requestApplyAction(baseDraft, action);
-    state.progression[state.progression.length - 1] = summarizeProgressionAction(action);
+    state.progression[lastIndex] = summarizeProgressionAction(action);
     sanitizeClueFormState();
     clearVisibleShareLink();
     hideError();
@@ -2497,20 +2501,22 @@ async function rewriteLastClue(action) {
   }
 }
 
-async function undoLastEdit() {
-  if (!state.response || state.progression.length === 0) {
+async function removeLastClue() {
+  if (!state.response) {
     return;
   }
 
-  const previousDraft = revertProgressionDraft(
-    state.response.draft,
-    lastProgressionAction(),
-  );
+  const lastIndex = lastClueProgressionIndex();
+  if (lastIndex < 0) {
+    return;
+  }
+
+  const previousDraft = revertProgressionDraft(state.response.draft, state.progression[lastIndex]);
   setBusy(true);
 
   try {
     state.response = await describeDraft(previousDraft);
-    state.progression.pop();
+    state.progression.splice(lastIndex, 1);
   } finally {
     setBusy(false);
   }
@@ -2567,10 +2573,10 @@ function renderTopControls() {
   const canGenerateRemaining =
     state.response &&
     !shareReady &&
-    state.response.draft.initial_reveal !== null &&
     state.response.next_clue_targets.length > 0;
+  const canRemoveClue = lastClueProgressionIndex() >= 0;
   generateRemainingButton.disabled = state.busy || !canGenerateRemaining;
-  undoButton.disabled = state.busy || state.progression.length === 0;
+  undoButton.disabled = state.busy || !canRemoveClue;
   shareButton.hidden = !shareReady;
   shareButton.disabled = state.busy || !shareReady;
   shareButton.classList.toggle("button-good", shareReady);
@@ -3321,7 +3327,7 @@ async function handleInitialAnswer(answer) {
   }
 
   try {
-    await applyUndoableAction({
+    await applyPersistentAction({
       kind: "set_initial_reveal",
       row: view.row,
       col: view.col,
@@ -3359,7 +3365,7 @@ async function handleSaveClue() {
       col: view.col,
       clue,
     };
-    if (isLastAddedClueTile(view) && state.progression.length > 0) {
+    if (isLastAddedClueTile(view) && lastClueProgressionIndex() >= 0) {
       await rewriteLastClue(action);
     } else {
       await applyUndoableAction(action);
@@ -3394,15 +3400,60 @@ async function handleSuggestClue() {
   }
 
   let draft = state.response.draft;
-  if (isLastAddedClueTile(view) && state.progression.length > 0) {
-    draft = revertProgressionDraft(state.response.draft, lastProgressionAction());
+  if (isLastAddedClueTile(view) && lastClueProgressionIndex() >= 0) {
+    draft = revertProgressionDraft(state.response.draft, lastClueProgressionAction());
   }
 
   const response = await requestSuggestedClue(draft, view.row, view.col);
   applySuggestedClue(response.clue);
 }
 
-async function handleGenerateRemainingClues() {
+function shufflePositions(positions) {
+  for (let index = positions.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [positions[index], positions[swapIndex]] = [positions[swapIndex], positions[index]];
+  }
+}
+
+async function suggestAndApplyRandomClueOnce() {
+  if (!state.response) {
+    return false;
+  }
+
+  const targets = [...state.response.next_clue_targets];
+  if (targets.length === 0) {
+    return false;
+  }
+
+  shufflePositions(targets);
+  let lastError = null;
+
+  for (const target of targets) {
+    try {
+      const response = await requestSuggestedClue(
+        state.response.draft,
+        target.row,
+        target.col,
+      );
+      state.selected = { row: target.row, col: target.col };
+      await applyUndoableAction({
+        kind: "add_clue",
+        row: target.row,
+        col: target.col,
+        clue: response.clue,
+      });
+      return true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError ?? new Error("No valid clue suggestion was found.");
+}
+
+async function handleSuggestRandomClue(options = {}) {
+  const { complete = false } = options;
+
   if (!state.response || state.busy) {
     return;
   }
@@ -3411,36 +3462,18 @@ async function handleGenerateRemainingClues() {
     return;
   }
 
-  setBusy(true);
-
   try {
-    const response = await requestGenerateRemainingClues(state.response.draft);
-    state.response = response.state;
-    state.progression.push(
-      ...response.added_clues.map((position) =>
-        summarizeProgressionAction({
-          kind: "add_clue",
-          row: position.row,
-          col: position.col,
-        }),
-      ),
-    );
-    const lastAdded = response.added_clues.at(-1);
-    if (lastAdded) {
-      state.selected = { row: lastAdded.row, col: lastAdded.col };
-    }
-    state.isEditingDetails = false;
-    state.editDraft = null;
-    closeEmojiPicker();
-    closeCustomRoleModal();
-    sanitizeClueFormState();
-    clearVisibleShareLink();
-    hideError();
-    ensureSelectionInBounds();
-    persistEditorState();
-    render();
-  } finally {
-    setBusy(false);
+    do {
+      const applied = await suggestAndApplyRandomClueOnce();
+      if (!applied) {
+        if (complete && state.response && !state.response.share_ready) {
+          throw new Error("The draft cannot be completed from its current state.");
+        }
+        return;
+      }
+    } while (complete && state.response && !state.response.share_ready);
+  } catch (error) {
+    showError(complete ? "Generation Failed" : "Suggestion Failed", error.message);
   }
 }
 
@@ -3486,12 +3519,8 @@ function bindEvents() {
     }
   });
 
-  generateRemainingButton.addEventListener("click", async () => {
-    try {
-      await handleGenerateRemainingClues();
-    } catch (error) {
-      showError("Generation Failed", error.message);
-    }
+  generateRemainingButton.addEventListener("click", async (event) => {
+    await handleSuggestRandomClue({ complete: event.shiftKey });
   });
 
   undoButton.addEventListener("click", async () => {
@@ -3499,9 +3528,9 @@ function bindEvents() {
       return;
     }
     try {
-      await undoLastEdit();
+      await removeLastClue();
     } catch (error) {
-      showError("Undo Failed", error.message);
+      showError("Remove Failed", error.message);
     }
   });
 
@@ -3723,10 +3752,26 @@ function bindEvents() {
     }
 
     event.preventDefault();
-    void undoLastEdit().catch((error) => {
-      showError("Undo Failed", error.message);
+    void removeLastClue().catch((error) => {
+      showError("Remove Failed", error.message);
     });
   });
+
+  document.addEventListener(
+    "dblclick",
+    (event) => {
+      if (!(event.target instanceof Element)) {
+        return;
+      }
+
+      if (!event.target.closest("button, input, select, textarea, [role='button'], a, label")) {
+        return;
+      }
+
+      event.preventDefault();
+    },
+    { passive: false },
+  );
 }
 
 async function init() {

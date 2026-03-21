@@ -54,7 +54,6 @@ const maxBoardDimension = 20;
 const noteTapDelayMs = 420;
 const cornerNotePressDelayMs = 420;
 const suppressedNoteClickDelayMs = 260;
-const clueTapDelayMs = 260;
 const noteColors = ["yellow", "red", "green", "orange", "magenta", "cyan"];
 const topNoteColors = new Set(noteColors);
 const bottomNoteColors = new Set(noteColors);
@@ -105,6 +104,7 @@ const state = {
   notes: new Map(),
   bottomNotes: new Map(),
   mistakeTiles: new Set(),
+  timerElapsedMs: 0,
   loadingClues: new Set(),
   modalCell: null,
   hiddenClues: new Set(),
@@ -115,7 +115,6 @@ const state = {
   pendingBottomNotePress: null,
   suppressedTopNoteClick: null,
   suppressedBottomNoteClick: null,
-  pendingClueTap: null,
   sharedStoredPuzzleId: null,
   shareLinkPromise: null,
   shareFeedbackTimer: null,
@@ -451,14 +450,37 @@ function readSavedProgress(boardSize = currentBoardSize()) {
     const mistakeTiles = Array.isArray(parsed?.mistakeTiles)
       ? parsed.mistakeTiles.filter((key) => typeof key === "string")
       : [];
-    const timerStartedAt =
+    const legacyTimerStartedAt =
       Number.isFinite(parsed?.timerStartedAt) && parsed.timerStartedAt >= 0
         ? parsed.timerStartedAt
         : null;
-    const timerCompletedAt =
+    const legacyTimerCompletedAt =
       Number.isFinite(parsed?.timerCompletedAt) && parsed.timerCompletedAt >= 0
         ? parsed.timerCompletedAt
         : null;
+    const hasExplicitElapsed =
+      Number.isFinite(parsed?.timerElapsedMs) && parsed.timerElapsedMs >= 0;
+    const timerElapsedMs =
+      Number.isFinite(parsed?.timerElapsedMs) && parsed.timerElapsedMs >= 0
+        ? parsed.timerElapsedMs
+        : (
+            legacyTimerStartedAt !== null &&
+            legacyTimerCompletedAt !== null &&
+            legacyTimerCompletedAt >= legacyTimerStartedAt
+          )
+          ? legacyTimerCompletedAt - legacyTimerStartedAt
+          : 0;
+    const timerStartedAt = null;
+    const timerCompletedAt =
+      hasExplicitElapsed
+        ? legacyTimerCompletedAt
+        : (
+            legacyTimerStartedAt !== null &&
+            legacyTimerCompletedAt !== null &&
+            legacyTimerCompletedAt >= legacyTimerStartedAt
+          )
+          ? legacyTimerCompletedAt - legacyTimerStartedAt
+          : null;
     const completionAcknowledged = parsed?.completionAcknowledged === true;
 
     return {
@@ -467,6 +489,7 @@ function readSavedProgress(boardSize = currentBoardSize()) {
       notes,
       bottomNotes,
       mistakeTiles,
+      timerElapsedMs,
       timerStartedAt,
       timerCompletedAt,
       completionAcknowledged,
@@ -496,6 +519,7 @@ function persistProgress() {
   const bottomNotes = [...state.bottomNotes.entries()];
   const mistakeTiles = [...state.mistakeTiles];
   const hasTimerState =
+    state.timerElapsedMs > 0 ||
     state.timerStartedAt !== null ||
     state.timerCompletedAt !== null ||
     state.completionAcknowledged;
@@ -519,7 +543,9 @@ function persistProgress() {
       notes,
       bottomNotes,
       mistakeTiles,
-      timerStartedAt: state.timerStartedAt,
+      // Persist a paused snapshot so reloads never count time while the page is closed.
+      timerElapsedMs: currentTimerElapsedMs(),
+      timerStartedAt: null,
       timerCompletedAt: state.timerCompletedAt,
       completionAcknowledged: state.completionAcknowledged,
     }),
@@ -644,9 +670,53 @@ function finishGridText() {
     .join("\n");
 }
 
+function hasStartedTimer() {
+  return (
+    state.timerElapsedMs > 0 ||
+    state.timerStartedAt !== null ||
+    state.timerCompletedAt !== null
+  );
+}
+
+function currentTimerElapsedMs() {
+  if (state.timerCompletedAt !== null) {
+    return state.timerCompletedAt;
+  }
+
+  if (state.timerStartedAt !== null) {
+    return state.timerElapsedMs + (Date.now() - state.timerStartedAt);
+  }
+
+  return state.timerElapsedMs;
+}
+
+function pauseActiveTimer() {
+  if (state.timerStartedAt === null || state.timerCompletedAt !== null) {
+    return;
+  }
+
+  state.timerElapsedMs += Date.now() - state.timerStartedAt;
+  state.timerStartedAt = null;
+  persistProgress();
+}
+
+function resumeActiveTimerIfNeeded() {
+  if (
+    document.hidden ||
+    state.timerCompletedAt !== null ||
+    state.timerStartedAt !== null ||
+    !hasStartedTimer() ||
+    allTilesMarked()
+  ) {
+    return;
+  }
+
+  state.timerStartedAt = Date.now();
+  persistProgress();
+}
+
 async function finishShareText() {
-  const completedAt = state.timerCompletedAt ?? Date.now();
-  const elapsed = formatResultDuration(completedAt - state.timerStartedAt);
+  const elapsed = formatResultDuration(currentTimerElapsedMs());
   const shareUrl = await ensureShareableLink();
   return `${elapsed}\n${finishGridText()}\n${shareUrl}`;
 }
@@ -667,7 +737,7 @@ function flashFinishCopyButton(label) {
 }
 
 function openFinishModal() {
-  if (state.timerStartedAt === null || state.timerCompletedAt === null) {
+  if (!hasStartedTimer() || state.timerCompletedAt === null) {
     return;
   }
 
@@ -676,8 +746,7 @@ function openFinishModal() {
   closeConfirmModal();
   closeErrorModal();
   closeStartModal();
-  const completedAt = state.timerCompletedAt ?? Date.now();
-  const elapsed = formatResultDuration(completedAt - state.timerStartedAt);
+  const elapsed = formatResultDuration(currentTimerElapsedMs());
   finishMessageEl.textContent = elapsed;
   finishGridEl.textContent = finishGridText();
   resetFinishCopyButton();
@@ -698,10 +767,14 @@ function dismissFinishModal() {
 }
 
 function startPuzzle() {
-  if (state.timerStartedAt === null) {
+  if (!hasStartedTimer()) {
+    state.timerElapsedMs = 0;
     state.timerStartedAt = Date.now();
     state.timerCompletedAt = null;
     state.completionAcknowledged = false;
+    persistProgress();
+  } else if (state.timerStartedAt === null && state.timerCompletedAt === null) {
+    state.timerStartedAt = Date.now();
     persistProgress();
   }
 
@@ -776,7 +849,8 @@ function completePuzzleIfNeeded() {
   }
 
   if (state.timerCompletedAt === null) {
-    state.timerCompletedAt = Date.now();
+    state.timerCompletedAt = currentTimerElapsedMs();
+    state.timerStartedAt = null;
   }
 
   state.completionAcknowledged = false;
@@ -813,7 +887,9 @@ async function fetchEditorDraftFromCurrentPuzzle() {
   return response.json();
 }
 
-function persistEditorDraftForOpen(draft) {
+function persistEditorDraftForOpen(openState) {
+  const draft = openState?.draft ?? null;
+  const progression = Array.isArray(openState?.progression) ? openState.progression : [];
   const rows = Array.isArray(draft?.cells) ? draft.cells.length : 0;
   const cols = Array.isArray(draft?.cells?.[0]) ? draft.cells[0].length : 0;
 
@@ -827,7 +903,7 @@ function persistEditorDraftForOpen(draft) {
       boardSize: { rows, cols },
       pendingBoardSize: { rows, cols },
       draft,
-      progression: [],
+      progression,
       selected: null,
       lastSharedDraftKey: null,
       lastSharedStoredPuzzleId: null,
@@ -952,6 +1028,7 @@ async function loadPuzzle(seed, options = {}) {
   state.modalCell = null;
   state.hiddenClues = new Set();
   state.flashingTiles = new Set();
+  state.timerElapsedMs = 0;
   state.timerStartedAt = null;
   state.timerCompletedAt = null;
   state.completionAcknowledged = false;
@@ -969,7 +1046,6 @@ async function loadPuzzle(seed, options = {}) {
   clearPendingNoteTap();
   clearPendingTopNotePress();
   clearPendingBottomNotePress();
-  clearPendingClueTap();
   window.clearTimeout(state.flashTimer);
   state.flashTimer = null;
 
@@ -1738,15 +1814,6 @@ function clearPendingBottomNotePress() {
   state.pendingBottomNotePress = null;
 }
 
-function clearPendingClueTap() {
-  if (!state.pendingClueTap) {
-    return;
-  }
-
-  window.clearTimeout(state.pendingClueTap.timerId);
-  state.pendingClueTap = null;
-}
-
 function suppressTopNoteClick(key) {
   state.suppressedTopNoteClick = {
     key,
@@ -2034,29 +2101,14 @@ function handleBottomNoteClick(event, row, col) {
 }
 
 function handleClueTap(row, col) {
-  const key = guessKey(row, col);
   const clue = state.cells[row]?.[col]?.clue;
 
   if (!clue) {
     return;
   }
 
-  const repeatedTap = state.pendingClueTap && state.pendingClueTap.key === key;
-
-  clearPendingClueTap();
   toggleClueVisibility(row, col);
-
-  if (repeatedTap) {
-    flashMentionedTiles(clue);
-    return;
-  }
-
-  state.pendingClueTap = {
-    key,
-    timerId: window.setTimeout(() => {
-      state.pendingClueTap = null;
-    }, clueTapDelayMs),
-  };
+  flashMentionedTiles(clue);
 }
 
 async function restoreProgress() {
@@ -2065,11 +2117,12 @@ async function restoreProgress() {
     return { restored: false, error: null };
   }
 
+  state.timerElapsedMs = saved.timerElapsedMs;
   state.timerStartedAt = saved.timerStartedAt;
   state.timerCompletedAt = saved.timerCompletedAt;
   state.completionAcknowledged = saved.completionAcknowledged;
   if (
-    state.timerStartedAt === null &&
+    !hasStartedTimer() &&
     (
       saved.moves.length > 0 ||
       saved.hiddenClues.length > 0 ||
@@ -2078,7 +2131,9 @@ async function restoreProgress() {
       saved.mistakeTiles.length > 0
     )
   ) {
-    state.timerStartedAt = Date.now();
+    if (!document.hidden) {
+      state.timerStartedAt = Date.now();
+    }
   }
 
   try {
@@ -2117,15 +2172,14 @@ async function restoreProgress() {
       }),
     );
     if (allTilesMarked()) {
-      if (state.timerStartedAt === null) {
-        state.timerStartedAt = Date.now();
-      }
       if (state.timerCompletedAt === null) {
-        state.timerCompletedAt = Date.now();
+        state.timerCompletedAt = currentTimerElapsedMs();
       }
+      state.timerStartedAt = null;
     } else {
       state.timerCompletedAt = null;
       state.completionAcknowledged = false;
+      resumeActiveTimerIfNeeded();
     }
     persistProgress();
   } catch {
@@ -2134,6 +2188,7 @@ async function restoreProgress() {
     state.bottomNotes = new Map();
     state.mistakeTiles = new Set();
     state.hiddenClues = new Set();
+    state.timerElapsedMs = 0;
     state.timerStartedAt = null;
     state.timerCompletedAt = null;
     state.completionAcknowledged = false;
@@ -2169,10 +2224,13 @@ async function setGuess(row, col, nextGuess) {
   try {
     const clueResult = await fetchValidatedClue(row, col, nextGuess);
     applyAcceptedGuess(row, col, nextGuess, clueResult);
-    if (state.timerStartedAt === null) {
+    if (!hasStartedTimer()) {
+      state.timerElapsedMs = 0;
       state.timerStartedAt = Date.now();
       state.timerCompletedAt = null;
       state.completionAcknowledged = false;
+    } else if (state.timerStartedAt === null && state.timerCompletedAt === null) {
+      state.timerStartedAt = Date.now();
     }
     persistProgress();
     closeGuessModal();
@@ -2187,7 +2245,6 @@ async function clearBoard() {
   clearPendingNoteTap();
   clearPendingTopNotePress();
   clearPendingBottomNotePress();
-  clearPendingClueTap();
   window.clearTimeout(state.flashTimer);
   closeCornerNoteMenu();
   clearSavedProgress();
@@ -2499,6 +2556,34 @@ guessCriminalButton.addEventListener("click", async () => {
     showGuessError(error);
   }
 });
+
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    pauseActiveTimer();
+  } else {
+    resumeActiveTimerIfNeeded();
+  }
+});
+
+window.addEventListener("pagehide", () => {
+  pauseActiveTimer();
+});
+
+document.addEventListener(
+  "dblclick",
+  (event) => {
+    if (!(event.target instanceof Element)) {
+      return;
+    }
+
+    if (!event.target.closest("button, input, select, textarea, [role='button'], a, label")) {
+      return;
+    }
+
+    event.preventDefault();
+  },
+  { passive: false },
+);
 
 loadPuzzle(seedFromUrl(), { storedPuzzleId: storedPuzzleIdFromUrl() }).catch((error) => {
   openErrorModal(error.message);

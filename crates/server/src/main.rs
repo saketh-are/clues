@@ -16,10 +16,9 @@ use clues_core::{
 };
 use editor::{
     EditorAction, EditorBootstrapResponse, EditorDraftPuzzle, EditorError, EditorErrorKind,
-    EditorGenerateResponse, EditorStateResponse, apply_action as apply_editor_action_to_draft,
-    describe_draft as describe_editor_draft, draft_from_puzzle, editor_bootstrap, finalize_draft,
-    generate_remaining_clues as generate_editor_remaining_clues, new_random_draft,
-    suggest_clue as suggest_editor_clue,
+    EditorOpenResponse, EditorStateResponse, apply_action as apply_editor_action_to_draft,
+    describe_draft as describe_editor_draft, editor_bootstrap, finalize_draft, new_random_draft,
+    open_from_puzzle, suggest_clue as suggest_editor_clue,
 };
 use rand::random;
 use rocksdb::{DB, Options};
@@ -142,11 +141,6 @@ struct EditorSuggestResponse {
     clue: Clue,
 }
 
-#[derive(Debug, Deserialize)]
-struct EditorGenerateRequest {
-    draft: EditorDraftPuzzle,
-}
-
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
@@ -171,10 +165,6 @@ async fn main() {
         .route("/api/editor/open", post(open_editor_puzzle))
         .route("/api/editor/apply", post(apply_editor_action))
         .route("/api/editor/suggest", post(suggest_editor_clue_handler))
-        .route(
-            "/api/editor/generate-remaining",
-            post(generate_remaining_editor_clues),
-        )
         .route("/api/editor/share", post(share_editor_puzzle))
         .route("/api/stored-puzzles/generate", post(create_stored_puzzle))
         .route(
@@ -248,7 +238,7 @@ async fn describe_editor_puzzle(
 async fn open_editor_puzzle(
     State(state): State<AppState>,
     Json(request): Json<EditorOpenRequest>,
-) -> Result<Json<EditorDraftPuzzle>, AppError> {
+) -> Result<Json<EditorOpenResponse>, AppError> {
     let puzzle = match request.source {
         PuzzleSource::Generated { seed, rows, cols } => {
             let (_, generated) =
@@ -260,8 +250,8 @@ async fn open_editor_puzzle(
         }
     };
 
-    let draft = draft_from_puzzle(&puzzle).map_err(map_editor_error)?;
-    Ok(Json(draft))
+    let response = open_from_puzzle(&puzzle).map_err(map_editor_error)?;
+    Ok(Json(response))
 }
 
 async fn apply_editor_action(
@@ -278,13 +268,6 @@ async fn suggest_editor_clue_handler(
     let clue =
         suggest_editor_clue(request.draft, request.row, request.col).map_err(map_editor_error)?;
     Ok(Json(EditorSuggestResponse { clue }))
-}
-
-async fn generate_remaining_editor_clues(
-    Json(request): Json<EditorGenerateRequest>,
-) -> Result<Json<EditorGenerateResponse>, AppError> {
-    let response = generate_editor_remaining_clues(request.draft).map_err(map_editor_error)?;
-    Ok(Json(response))
 }
 
 async fn share_editor_puzzle(

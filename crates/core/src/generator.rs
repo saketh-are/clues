@@ -1359,6 +1359,35 @@ fn minimal_forcing_subset_size(
         return Ok(0);
     }
 
+    let greedy_size =
+        greedy_forcing_subset_size(puzzle, clues, known_mask, known_innocent_mask, targets)?;
+    if greedy_size <= 1 {
+        return Ok(greedy_size);
+    }
+
+    for subset_size in 1..greedy_size {
+        if exists_forcing_subset_of_size(
+            puzzle,
+            clues,
+            subset_size,
+            known_mask,
+            known_innocent_mask,
+            targets,
+        )? {
+            return Ok(subset_size);
+        }
+    }
+
+    Ok(greedy_size)
+}
+
+fn greedy_forcing_subset_size(
+    puzzle: &Puzzle,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<usize, SolveError> {
     let mut active = clues.to_vec();
 
     loop {
@@ -1367,10 +1396,7 @@ fn minimal_forcing_subset_size(
         for index in 0..active.len() {
             let mut trial = active.clone();
             trial.remove(index);
-            let solved =
-                solve_clues_with_known_mask(puzzle, &trial, known_mask, known_innocent_mask)?;
-
-            if solved.analysis.has_solution && forces_any_target(&solved.analysis, targets) {
+            if subset_forces_any_target(puzzle, &trial, known_mask, known_innocent_mask, targets)? {
                 removable_index = Some(index);
                 break;
             }
@@ -1384,6 +1410,65 @@ fn minimal_forcing_subset_size(
     }
 
     Ok(active.len())
+}
+
+fn exists_forcing_subset_of_size(
+    puzzle: &Puzzle,
+    clues: &[Clue],
+    subset_size: usize,
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<bool, SolveError> {
+    if subset_size == 0 || subset_size > clues.len() {
+        return Ok(false);
+    }
+
+    let mut indices = (0..subset_size).collect::<Vec<_>>();
+    let mut trial = Vec::with_capacity(subset_size);
+
+    loop {
+        trial.clear();
+        trial.extend(indices.iter().map(|&index| clues[index].clone()));
+
+        if subset_forces_any_target(puzzle, &trial, known_mask, known_innocent_mask, targets)? {
+            return Ok(true);
+        }
+
+        if !advance_combination_indices(&mut indices, clues.len()) {
+            return Ok(false);
+        }
+    }
+}
+
+fn advance_combination_indices(indices: &mut [usize], source_len: usize) -> bool {
+    let width = indices.len();
+
+    for pivot in (0..width).rev() {
+        let max_value = source_len - (width - pivot);
+        if indices[pivot] == max_value {
+            continue;
+        }
+
+        indices[pivot] += 1;
+        for index in (pivot + 1)..width {
+            indices[index] = indices[index - 1] + 1;
+        }
+        return true;
+    }
+
+    false
+}
+
+fn subset_forces_any_target(
+    puzzle: &Puzzle,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<bool, SolveError> {
+    let solved = solve_clues_with_known_mask(puzzle, clues, known_mask, known_innocent_mask)?;
+    Ok(solved.analysis.has_solution && forces_any_target(&solved.analysis, targets))
 }
 
 fn forces_any_target(
@@ -1849,9 +1934,10 @@ mod tests {
         closure_known_masks_from_analysis, combination_size_bonus, count_scope_is_too_small,
         distinct_roles, empty_puzzle, exact_count_triviality, family_weight, filter_is_redundant,
         generate_puzzle_with_rng, generate_puzzle_with_rng_and_instrumentation,
-        generate_puzzle_with_seed, gradual_active_tile_bonus, minimal_forcing_subset_size,
-        normalize_generated_clue, sample_filter_for_selector, sample_line_comparison_clue,
-        sample_roles, sample_witness_assignment, suggest_clue_for_known_tile_with_rng,
+        generate_puzzle_with_seed, gradual_active_tile_bonus, greedy_forcing_subset_size,
+        minimal_forcing_subset_size, normalize_generated_clue, sample_filter_for_selector,
+        sample_line_comparison_clue, sample_roles, sample_witness_assignment,
+        suggest_clue_for_known_tile_with_rng,
     };
 
     fn blank_analysis() -> ClueAnalysis {
@@ -2341,6 +2427,46 @@ mod tests {
                 .unwrap();
 
         assert_eq!(subset_size, 2);
+    }
+
+    #[test]
+    fn minimal_forcing_subset_size_finds_smaller_subset_than_greedy_removal() {
+        let names = NAMES[..CELL_COUNT]
+            .iter()
+            .map(|name| name.to_string())
+            .collect::<Vec<_>>();
+        let roles = (0..CELL_COUNT)
+            .map(|_| "Role".to_string())
+            .collect::<Vec<_>>();
+        let puzzle = empty_puzzle(BoardShape::new(ROWS as u8, COLS as u8), &names, &roles);
+        let target_name = puzzle.cells[0][1].name.clone();
+        let clues = vec![
+            Clue::Declaration {
+                name: target_name.clone(),
+                answer: crate::types::Answer::Criminal,
+            },
+            Clue::DirectRelation {
+                name: target_name,
+                answer: crate::types::Answer::Innocent,
+                direction: crate::clue::Direction::Left,
+            },
+            Clue::CountCells {
+                selector: CellSelector::Row { row: 0 },
+                answer: crate::types::Answer::Innocent,
+                count: Count::Number(1),
+                filter: CellFilter::Any,
+            },
+        ];
+
+        let greedy_subset =
+            greedy_forcing_subset_size(&puzzle, &clues, 0, 0, &[(1, ForcedAnswer::Criminal)])
+                .unwrap();
+        let exact_subset =
+            minimal_forcing_subset_size(&puzzle, &clues, 0, 0, &[(1, ForcedAnswer::Criminal)])
+                .unwrap();
+
+        assert_eq!(greedy_subset, 2);
+        assert_eq!(exact_subset, 1);
     }
 
     #[test]
