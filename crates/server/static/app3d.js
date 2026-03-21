@@ -2138,9 +2138,27 @@ function renderBoard() {
   const shellRect = boardShellEl.getBoundingClientRect();
   const sceneSize = Math.min(shellRect.width, shellRect.height);
   const extent = Math.max(depth, rows, cols);
-  const cellSize = Math.max(84, Math.min(156, Math.floor((sceneSize * 0.62) / extent)));
-  const typeScale = Math.max(0.82, Math.min(1, cellSize / 165));
-  const spacing = cellSize + Math.max(10, Math.floor(cellSize * 0.12));
+  const isCompactMobileLayout = window.innerWidth <= 720;
+  const fitRatio = isCompactMobileLayout
+    ? extent <= 2
+      ? 0.82
+      : extent === 3
+        ? 0.74
+        : 0.66
+    : 0.62;
+  const minCellSize = isCompactMobileLayout ? 76 : 84;
+  const maxCellSize = isCompactMobileLayout ? 170 : 156;
+  const cellSize = Math.max(
+    minCellSize,
+    Math.min(maxCellSize, Math.floor((sceneSize * fitRatio) / extent)),
+  );
+  const typeScale = isCompactMobileLayout
+    ? Math.max(0.56, Math.min(1, cellSize / 165 - Math.max(0, extent - 2) * 0.12))
+    : Math.max(0.82, Math.min(1, cellSize / 165));
+  const spacing = cellSize + Math.max(
+    isCompactMobileLayout ? 6 : 10,
+    Math.floor(cellSize * (isCompactMobileLayout ? 0.08 : 0.12)),
+  );
   const halfX = (cols - 1) / 2;
   const halfY = (rows - 1) / 2;
   const halfZ = (depth - 1) / 2;
