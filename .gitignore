@@ -1,2 +1,5 @@
 target/
 data/rocksdb/
+node_modules/
+playwright-report/
+test-results/
