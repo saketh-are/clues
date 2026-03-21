@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Clues 3D</title>
+    <link rel="stylesheet" href="/styles.css?v=20260321c" />
+    <link rel="stylesheet" href="/styles3d.css?v=20260321a" />
+  </head>
+  <body>
+    <main class="page page-3d">
+      <section class="topbar">
+        <div class="brand">
+          <h1>Clues 3D</h1>
+        </div>
+
+        <div class="controls">
+          <span id="board-3d-meta" class="three-d-meta"></span>
+          <button id="new-random-3d" class="button button-secondary" type="button">
+            New Puzzle
+          </button>
+          <button id="reset-view-3d" class="button button-secondary" type="button">
+            Reset View
+          </button>
+        </div>
+      </section>
+
+      <section class="three-d-statusbar">
+        <p id="three-d-status" class="three-d-status">Drag to rotate</p>
+      </section>
+
+      <section id="board-3d-shell" class="board-3d-shell">
+        <div id="board-3d-viewport" class="board-3d-viewport">
+          <div id="board-3d-scene" class="board-3d-scene" aria-live="polite"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="guess-modal" class="modal" hidden>
+      <div id="guess-backdrop" class="modal-backdrop"></div>
+      <div
+        class="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="guess-title"
+      >
+        <span id="guess-emoji" class="modal-emoji" aria-hidden="true"></span>
+        <h2 id="guess-title" class="modal-title"></h2>
+        <div class="modal-actions">
+          <button id="guess-innocent" class="button button-good" type="button">
+            Innocent
+          </button>
+          <button id="guess-criminal" class="button button-bad" type="button">
+            Criminal
+          </button>
+        </div>
+        <button id="guess-cancel" class="button button-secondary modal-dismiss" type="button">
+          Cancel
+        </button>
+      </div>
+    </div>
+
+    <div id="error-modal" class="modal" hidden>
+      <div id="error-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card" role="alertdialog" aria-modal="true" aria-labelledby="error-title">
+        <h2 id="error-title" class="modal-title modal-title-error"></h2>
+        <p id="error-message" class="modal-message"></p>
+        <button id="error-dismiss" class="button button-secondary modal-dismiss" type="button">
+          Dismiss
+        </button>
+      </div>
+    </div>
+
+    <script src="/app3d.js?v=20260321a" defer></script>
+  </body>
+</html>

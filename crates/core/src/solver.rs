@@ -6,7 +6,7 @@ use crate::{
         PersonPredicate, Quantifier,
     },
     geometry::{BoardShape, Position},
-    puzzle::{Puzzle, Visibility},
+    puzzle::{Cell, Puzzle, Puzzle3D, Visibility},
     types::{Answer, Name, Role},
 };
 
@@ -27,8 +27,21 @@ pub struct ClueAnalysis {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClueAnalysis3D {
+    pub has_solution: bool,
+    pub forced_answers: Vec<Vec<Vec<ForcedAnswer>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FlatClueAnalysis {
+    pub has_solution: bool,
+    pub board: BoardShape,
+    pub forced_answers: Vec<ForcedAnswer>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SolutionSet {
-    pub analysis: ClueAnalysis,
+    pub analysis: FlatClueAnalysis,
     pub assignments: Vec<u32>,
     pub variable_mask: u32,
     pub implicated_mask: u32,
@@ -40,6 +53,7 @@ pub enum SolveError {
     TooManyCells(usize),
     DuplicateName(Name),
     MissingName(Name),
+    InvalidLayer(u8),
     InvalidRow(u8),
     InvalidColumn(Column),
 }
@@ -127,13 +141,56 @@ pub fn analyze_revealed_puzzle(puzzle: &Puzzle) -> Result<ClueAnalysis, SolveErr
                 .map(|cell| cell.clue.clone())
         })
         .collect();
-    let (known_mask, known_innocent_mask) = known_masks_from_revealed_cells(puzzle)?;
+    let (known_mask, known_innocent_mask) = known_masks_from_revealed_cells_2d(puzzle)?;
 
-    Ok(solve_clues_with_known_mask(puzzle, &clues, known_mask, known_innocent_mask)?.analysis)
+    Ok(flat_analysis_to_2d(
+        solve_clues_with_known_mask(puzzle, &clues, known_mask, known_innocent_mask)?.analysis,
+    ))
 }
 
 pub fn analyze_clues(puzzle: &Puzzle, clues: &[Clue]) -> Result<ClueAnalysis, SolveError> {
-    Ok(solve_clues_with_known_mask(puzzle, clues, 0, 0)?.analysis)
+    Ok(flat_analysis_to_2d(
+        solve_clues_with_known_mask(puzzle, clues, 0, 0)?.analysis,
+    ))
+}
+
+pub fn analyze_puzzle_3d(puzzle: &Puzzle3D) -> Result<ClueAnalysis3D, SolveError> {
+    let clues: Vec<Clue> = puzzle
+        .cells
+        .iter()
+        .flat_map(|layer| {
+            layer
+                .iter()
+                .flat_map(|row| row.iter().map(|cell| cell.clue.clone()))
+        })
+        .collect();
+
+    analyze_clues_3d(puzzle, &clues)
+}
+
+pub fn analyze_revealed_puzzle_3d(puzzle: &Puzzle3D) -> Result<ClueAnalysis3D, SolveError> {
+    let clues: Vec<Clue> = puzzle
+        .cells
+        .iter()
+        .flat_map(|layer| {
+            layer.iter().flat_map(|row| {
+                row.iter()
+                    .filter(|cell| cell.state == Visibility::Revealed)
+                    .map(|cell| cell.clue.clone())
+            })
+        })
+        .collect();
+    let (known_mask, known_innocent_mask) = known_masks_from_revealed_cells_3d(puzzle)?;
+
+    Ok(flat_analysis_to_3d(
+        solve_clues_with_known_mask_3d(puzzle, &clues, known_mask, known_innocent_mask)?.analysis,
+    ))
+}
+
+pub fn analyze_clues_3d(puzzle: &Puzzle3D, clues: &[Clue]) -> Result<ClueAnalysis3D, SolveError> {
+    Ok(flat_analysis_to_3d(
+        solve_clues_with_known_mask_3d(puzzle, clues, 0, 0)?.analysis,
+    ))
 }
 
 pub(crate) fn solve_clues_with_known_mask(
@@ -142,7 +199,26 @@ pub(crate) fn solve_clues_with_known_mask(
     known_mask: u32,
     known_innocent_mask: u32,
 ) -> Result<SolutionSet, SolveError> {
-    let context = CompileContext::new(puzzle)?;
+    let context = CompileContext::from_2d_puzzle(puzzle)?;
+    solve_clues_with_context(&context, clues, known_mask, known_innocent_mask)
+}
+
+pub(crate) fn solve_clues_with_known_mask_3d(
+    puzzle: &Puzzle3D,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+) -> Result<SolutionSet, SolveError> {
+    let context = CompileContext::from_3d_puzzle(puzzle)?;
+    solve_clues_with_context(&context, clues, known_mask, known_innocent_mask)
+}
+
+fn solve_clues_with_context(
+    context: &CompileContext,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+) -> Result<SolutionSet, SolveError> {
     let compiled_clues = clues
         .iter()
         .map(|clue| context.compile_clue(clue))
@@ -191,8 +267,8 @@ pub(crate) fn solve_clues_with_known_mask(
     })
 }
 
-fn known_masks_from_revealed_cells(puzzle: &Puzzle) -> Result<(BitMask, BitMask), SolveError> {
-    let context = CompileContext::new(puzzle)?;
+fn known_masks_from_revealed_cells_2d(puzzle: &Puzzle) -> Result<(BitMask, BitMask), SolveError> {
+    let context = CompileContext::from_2d_puzzle(puzzle)?;
     let mut known_mask = 0;
     let mut known_innocent_mask = 0;
 
@@ -214,6 +290,84 @@ fn known_masks_from_revealed_cells(puzzle: &Puzzle) -> Result<(BitMask, BitMask)
     Ok((known_mask, known_innocent_mask))
 }
 
+fn known_masks_from_revealed_cells_3d(
+    puzzle: &Puzzle3D,
+) -> Result<(BitMask, BitMask), SolveError> {
+    let context = CompileContext::from_3d_puzzle(puzzle)?;
+    let mut known_mask = 0;
+    let mut known_innocent_mask = 0;
+
+    for (layer_index, layer) in puzzle.cells.iter().enumerate() {
+        for (row_index, row) in layer.iter().enumerate() {
+            for (col_index, cell) in row.iter().enumerate() {
+                if cell.state != Visibility::Revealed {
+                    continue;
+                }
+
+                let bit = 1u32
+                    << context.board.index_of(Position::new_3d(
+                        layer_index as i16,
+                        row_index as i16,
+                        col_index as i16,
+                    ));
+                known_mask |= bit;
+
+                if cell.answer == Answer::Innocent {
+                    known_innocent_mask |= bit;
+                }
+            }
+        }
+    }
+
+    Ok((known_mask, known_innocent_mask))
+}
+
+#[cfg(test)]
+fn known_masks_from_revealed_cells(puzzle: &Puzzle) -> Result<(BitMask, BitMask), SolveError> {
+    known_masks_from_revealed_cells_2d(puzzle)
+}
+
+fn flat_analysis_to_2d(analysis: FlatClueAnalysis) -> ClueAnalysis {
+    let cols = analysis.board.cols as usize;
+    let plane_size = analysis.board.rows as usize * cols;
+
+    let forced_answers = analysis
+        .forced_answers
+        .chunks(plane_size.max(1))
+        .next()
+        .unwrap_or(&[])
+        .chunks(cols.max(1))
+        .map(|row| row.to_vec())
+        .collect();
+
+    ClueAnalysis {
+        has_solution: analysis.has_solution,
+        forced_answers,
+    }
+}
+
+fn flat_analysis_to_3d(analysis: FlatClueAnalysis) -> ClueAnalysis3D {
+    let cols = analysis.board.cols as usize;
+    let rows = analysis.board.rows as usize;
+    let plane_size = rows * cols;
+
+    let forced_answers = analysis
+        .forced_answers
+        .chunks(plane_size.max(1))
+        .map(|layer| {
+            layer
+                .chunks(cols.max(1))
+                .map(|row| row.to_vec())
+                .collect()
+        })
+        .collect();
+
+    ClueAnalysis3D {
+        has_solution: analysis.has_solution,
+        forced_answers,
+    }
+}
+
 impl CompileContext {
     fn analysis_from_assignments(
         &self,
@@ -221,7 +375,7 @@ impl CompileContext {
         known_mask: BitMask,
         known_innocent_mask: BitMask,
         variable_mask: BitMask,
-    ) -> ClueAnalysis {
+    ) -> FlatClueAnalysis {
         let mut always_innocent = self.full_mask;
         let mut always_criminal = self.full_mask;
 
@@ -230,37 +384,34 @@ impl CompileContext {
             always_criminal &= (!assignment) & self.full_mask;
         }
 
-        let forced_answers = (0..self.board.rows as usize)
-            .map(|row| {
-                (0..self.cols as usize)
-                    .map(|col| {
-                        if assignments.is_empty() {
-                            return ForcedAnswer::Neither;
-                        }
+        let forced_answers = (0..self.cell_count)
+            .map(|index| {
+                if assignments.is_empty() {
+                    return ForcedAnswer::Neither;
+                }
 
-                        let bit = 1u32 << (row * self.cols as usize + col);
-                        if known_mask & bit != 0 {
-                            if known_innocent_mask & bit != 0 {
-                                ForcedAnswer::Innocent
-                            } else {
-                                ForcedAnswer::Criminal
-                            }
-                        } else if variable_mask & bit == 0 {
-                            ForcedAnswer::Neither
-                        } else if always_innocent & bit != 0 {
-                            ForcedAnswer::Innocent
-                        } else if always_criminal & bit != 0 {
-                            ForcedAnswer::Criminal
-                        } else {
-                            ForcedAnswer::Neither
-                        }
-                    })
-                    .collect()
+                let bit = 1u32 << index;
+                if known_mask & bit != 0 {
+                    if known_innocent_mask & bit != 0 {
+                        ForcedAnswer::Innocent
+                    } else {
+                        ForcedAnswer::Criminal
+                    }
+                } else if variable_mask & bit == 0 {
+                    ForcedAnswer::Neither
+                } else if always_innocent & bit != 0 {
+                    ForcedAnswer::Innocent
+                } else if always_criminal & bit != 0 {
+                    ForcedAnswer::Criminal
+                } else {
+                    ForcedAnswer::Neither
+                }
             })
             .collect();
 
-        ClueAnalysis {
+        FlatClueAnalysis {
             has_solution: !assignments.is_empty(),
+            board: self.board,
             forced_answers,
         }
     }
@@ -287,24 +438,11 @@ impl CompileContext {
         }
     }
 
-    fn new(puzzle: &Puzzle) -> Result<Self, SolveError> {
-        let rows = puzzle.cells.len();
-        let cols = puzzle
-            .cells
-            .first()
-            .map(|row| row.len())
-            .unwrap_or_default();
-
-        if puzzle.cells.iter().any(|row| row.len() != cols) {
-            return Err(SolveError::RaggedBoard);
-        }
-
-        let cell_count = rows * cols;
+    fn new(board: BoardShape, cells: &[&Cell]) -> Result<Self, SolveError> {
+        let cell_count = board.cell_count();
         if cell_count > MAX_CELL_COUNT {
             return Err(SolveError::TooManyCells(cell_count));
         }
-
-        let board = BoardShape::new(rows as u8, cols as u8);
         let full_mask = if cell_count == MAX_CELL_COUNT {
             BitMask::MAX
         } else {
@@ -316,41 +454,37 @@ impl CompileContext {
         let mut edge_mask = 0;
         let mut corner_mask = 0;
 
-        for (row_index, row) in puzzle.cells.iter().enumerate() {
-            for (col_index, cell) in row.iter().enumerate() {
-                let index = row_index * cols + col_index;
-                let position = Position::new(row_index as i16, col_index as i16);
-                let bit = 1u32 << index;
-                positions[index] = position;
+        for (index, cell) in cells.iter().enumerate() {
+            let position = board.position_of_index(index);
+            let bit = 1u32 << index;
+            positions[index] = position;
 
-                if names.insert(cell.name.clone(), index).is_some() {
-                    return Err(SolveError::DuplicateName(cell.name.clone()));
-                }
+            if names.insert(cell.name.clone(), index).is_some() {
+                return Err(SolveError::DuplicateName(cell.name.clone()));
+            }
 
-                role_masks
-                    .entry(cell.role.clone())
-                    .and_modify(|mask| *mask |= bit)
-                    .or_insert(bit);
+            role_masks
+                .entry(cell.role.clone())
+                .and_modify(|mask| *mask |= bit)
+                .or_insert(bit);
 
-                if board.is_edge(position) {
-                    edge_mask |= bit;
-                }
-                if board.is_corner(position) {
-                    corner_mask |= bit;
-                }
+            if board.is_edge(position) {
+                edge_mask |= bit;
+            }
+            if board.is_corner(position) {
+                corner_mask |= bit;
             }
         }
 
         let mut orthogonal_masks = vec![0; cell_count];
         for (index, position) in positions.iter().enumerate() {
-            orthogonal_masks[index] =
-                Self::positions_to_mask(&board.orthogonal_neighbors(*position), cols);
+            orthogonal_masks[index] = Self::positions_to_mask(&board, &board.orthogonal_neighbors(*position));
         }
 
         Ok(Self {
             board,
             cell_count,
-            cols: cols as u8,
+            cols: board.cols,
             full_mask,
             edge_mask,
             corner_mask,
@@ -359,6 +493,62 @@ impl CompileContext {
             orthogonal_masks,
             positions,
         })
+    }
+
+    fn from_2d_puzzle(puzzle: &Puzzle) -> Result<Self, SolveError> {
+        let rows = puzzle.cells.len();
+        let cols = puzzle
+            .cells
+            .first()
+            .map(|row| row.len())
+            .unwrap_or_default();
+
+        if puzzle.cells.iter().any(|row| row.len() != cols) {
+            return Err(SolveError::RaggedBoard);
+        }
+
+        let board = BoardShape::new(rows as u8, cols as u8);
+        let cells = puzzle
+            .cells
+            .iter()
+            .flat_map(|row| row.iter())
+            .collect::<Vec<_>>();
+        Self::new(board, &cells)
+    }
+
+    fn from_3d_puzzle(puzzle: &Puzzle3D) -> Result<Self, SolveError> {
+        let depth = puzzle.cells.len();
+        let rows = puzzle
+            .cells
+            .first()
+            .map(|layer| layer.len())
+            .unwrap_or_default();
+        let cols = puzzle
+            .cells
+            .first()
+            .and_then(|layer| layer.first())
+            .map(|row| row.len())
+            .unwrap_or_default();
+
+        if puzzle.cells.iter().any(|layer| layer.len() != rows) {
+            return Err(SolveError::RaggedBoard);
+        }
+        if puzzle
+            .cells
+            .iter()
+            .flat_map(|layer| layer.iter())
+            .any(|row| row.len() != cols)
+        {
+            return Err(SolveError::RaggedBoard);
+        }
+
+        let board = BoardShape::new_3d(depth as u8, rows as u8, cols as u8);
+        let cells = puzzle
+            .cells
+            .iter()
+            .flat_map(|layer| layer.iter().flat_map(|row| row.iter()))
+            .collect::<Vec<_>>();
+        Self::new(board, &cells)
     }
 
     fn compile_clue(&self, clue: &Clue) -> Result<CompiledClue, SolveError> {
@@ -486,10 +676,9 @@ impl CompileContext {
             } => {
                 let filter_mask = self.filter_mask(*filter)?;
                 for (index, position) in self.positions.iter().enumerate() {
-                    masks_by_origin[index] = Self::positions_to_mask(
-                        &self.board.touching_neighbors(*position),
-                        self.cols as usize,
-                    ) & filter_mask;
+                    masks_by_origin[index] =
+                        Self::positions_to_mask(&self.board, &self.board.touching_neighbors(*position))
+                            & filter_mask;
                 }
 
                 Ok(CompiledPredicate::Count {
@@ -504,6 +693,8 @@ impl CompileContext {
                     Direction::Below => Direction::Above.offset(),
                     Direction::Left => Direction::Right.offset(),
                     Direction::Right => Direction::Left.offset(),
+                    Direction::Front => Direction::Back.offset(),
+                    Direction::Back => Direction::Front.offset(),
                 };
 
                 for (index, position) in self.positions.iter().enumerate() {
@@ -521,8 +712,8 @@ impl CompileContext {
             }
             PersonPredicate::Neighboring { name } => Ok(CompiledPredicate::Structural {
                 matching_origins: Self::positions_to_mask(
+                    &self.board,
                     &self.board.touching_neighbors(self.name_position(name)?),
-                    self.cols as usize,
                 ),
             }),
         }
@@ -646,15 +837,16 @@ impl CompileContext {
     fn selector_mask(&self, selector: &CellSelector) -> Result<BitMask, SolveError> {
         Ok(match selector {
             CellSelector::Board => self.full_mask,
+            CellSelector::Layer { layer } => self.line_mask(Line::Layer(*layer))?,
             CellSelector::Neighbor { name } => Self::positions_to_mask(
+                &self.board,
                 &self.board.touching_neighbors(self.name_position(name)?),
-                self.cols as usize,
             ),
             CellSelector::Direction { name, direction } => Self::positions_to_mask(
+                &self.board,
                 &self
                     .board
                     .tiles_in_direction(self.name_position(name)?, direction.offset()),
-                self.cols as usize,
             ),
             CellSelector::Row { row } => self.line_mask(Line::Row(*row))?,
             CellSelector::Col { col } => self.line_mask(Line::Col(*col))?,
@@ -664,25 +856,17 @@ impl CompileContext {
             } => {
                 let first = self.name_position(first_name)?;
                 let second = self.name_position(second_name)?;
-
-                if first.row == second.row || first.col == second.col {
-                    Self::positions_to_mask(
-                        &self.board.positions_between(first, second),
-                        self.cols as usize,
-                    )
-                } else {
-                    0
-                }
+                Self::positions_to_mask(&self.board, &self.board.positions_between(first, second))
             }
             CellSelector::SharedNeighbor {
                 first_name,
                 second_name,
             } => Self::positions_to_mask(
+                &self.board,
                 &self.board.common_neighbors(
                     self.name_position(first_name)?,
                     self.name_position(second_name)?,
                 ),
-                self.cols as usize,
             ),
         })
     }
@@ -758,14 +942,24 @@ impl CompileContext {
 
     fn line_mask(&self, line: Line) -> Result<BitMask, SolveError> {
         match line {
+            Line::Layer(layer) => {
+                if layer >= self.board.depth {
+                    return Err(SolveError::InvalidLayer(layer));
+                }
+
+                Ok(Self::positions_to_mask(
+                    &self.board,
+                    &self.board.layer_positions(layer),
+                ))
+            }
             Line::Row(row) => {
                 if row >= self.board.rows {
                     return Err(SolveError::InvalidRow(row));
                 }
 
                 Ok(Self::positions_to_mask(
+                    &self.board,
                     &self.board.row_positions(row),
-                    self.cols as usize,
                 ))
             }
             Line::Col(col) => {
@@ -774,8 +968,8 @@ impl CompileContext {
                 }
 
                 Ok(Self::positions_to_mask(
+                    &self.board,
                     &self.board.col_positions(col.index()),
-                    self.cols as usize,
                 ))
             }
         }
@@ -801,13 +995,13 @@ impl CompileContext {
     }
 
     fn position_to_bit(&self, position: Position) -> BitMask {
-        1u32 << (position.row as usize * self.cols as usize + position.col as usize)
+        1u32 << self.board.index_of(position)
     }
 
-    fn positions_to_mask(positions: &[Position], cols: usize) -> BitMask {
-        positions.iter().fold(0, |mask, position| {
-            mask | (1u32 << (position.row as usize * cols + position.col as usize))
-        })
+    fn positions_to_mask(board: &BoardShape, positions: &[Position]) -> BitMask {
+        positions
+            .iter()
+            .fold(0, |mask, position| mask | (1u32 << board.index_of(*position)))
     }
 }
 
@@ -818,10 +1012,11 @@ mod tests {
             CellFilter, CellSelector, Clue, Column, Comparison, Count, Direction, Line,
             PersonGroup, PersonPredicate, Quantifier,
         },
-        puzzle::{Cell, Puzzle, Visibility},
+        puzzle::{Cell, Puzzle, Puzzle3D, Visibility},
         solver::{
-            ClueAnalysis, ForcedAnswer, analyze_clues, analyze_puzzle, analyze_revealed_puzzle,
-            known_masks_from_revealed_cells, solve_clues_with_known_mask,
+            ClueAnalysis, ClueAnalysis3D, ForcedAnswer, analyze_clues, analyze_clues_3d,
+            analyze_puzzle, analyze_revealed_puzzle, known_masks_from_revealed_cells,
+            solve_clues_with_known_mask,
         },
         types::{Answer, NAMES},
     };
@@ -891,8 +1086,61 @@ mod tests {
         }
     }
 
+    fn small_test_puzzle_3d() -> Puzzle3D {
+        let dummy_clue = Clue::CountCells {
+            selector: CellSelector::Board,
+            answer: Answer::Innocent,
+            count: Count::AtLeast(0),
+            filter: CellFilter::Any,
+        };
+
+        let cells = (0..2)
+            .map(|layer| {
+                (0..2)
+                    .map(|row| {
+                        (0..2)
+                            .map(|col| {
+                                let index = layer * 4 + row * 2 + col;
+                                Cell {
+                                    name: NAMES[index].to_string(),
+                                    role: "Role".to_string(),
+                                    emoji: None,
+                                    clue: dummy_clue.clone(),
+                                    answer: Answer::Innocent,
+                                    state: Visibility::Hidden,
+                                }
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+
+        Puzzle3D {
+            author: None,
+            cells,
+        }
+    }
+
     fn forced_at(analysis: &ClueAnalysis, row: usize, col: usize) -> ForcedAnswer {
         analysis.forced_answers[row][col]
+    }
+
+    fn forced_at_3d(
+        analysis: &ClueAnalysis3D,
+        layer: usize,
+        row: usize,
+        col: usize,
+    ) -> ForcedAnswer {
+        analysis.forced_answers[layer][row][col]
+    }
+
+    fn forced_at_flat(
+        analysis: &crate::solver::FlatClueAnalysis,
+        row: usize,
+        col: usize,
+    ) -> ForcedAnswer {
+        analysis.forced_answers[row * analysis.board.cols as usize + col]
     }
 
     #[test]
@@ -937,6 +1185,27 @@ mod tests {
                 .flatten()
                 .all(|forced| *forced == ForcedAnswer::Innocent)
         );
+    }
+
+    #[test]
+    fn layer_selector_can_force_an_entire_layer_in_3d() {
+        let puzzle = small_test_puzzle_3d();
+        let clues = [Clue::CountCells {
+            selector: CellSelector::Layer { layer: 0 },
+            answer: Answer::Innocent,
+            count: Count::Number(4),
+            filter: CellFilter::Any,
+        }];
+
+        let analysis = analyze_clues_3d(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        for row in 0..2 {
+            for col in 0..2 {
+                assert_eq!(forced_at_3d(&analysis, 0, row, col), ForcedAnswer::Innocent);
+                assert_eq!(forced_at_3d(&analysis, 1, row, col), ForcedAnswer::Neither);
+            }
+        }
     }
 
     #[test]
@@ -1385,8 +1654,8 @@ mod tests {
         let solved = solve_clues_with_known_mask(&puzzle, &clues, 0, 0).unwrap();
 
         assert_eq!(solved.assignments.len(), 1);
-        assert_eq!(forced_at(&solved.analysis, 0, 0), ForcedAnswer::Innocent);
-        assert_eq!(forced_at(&solved.analysis, 4, 3), ForcedAnswer::Neither);
+        assert_eq!(forced_at_flat(&solved.analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at_flat(&solved.analysis, 4, 3), ForcedAnswer::Neither);
     }
 
     #[test]
@@ -1465,7 +1734,7 @@ mod tests {
             solve_clues_with_known_mask(&puzzle, &clues, known_mask, known_innocent_mask).unwrap();
 
         assert_eq!(solved.assignments.len(), 1);
-        assert_eq!(forced_at(&solved.analysis, 0, 0), ForcedAnswer::Innocent);
-        assert_eq!(forced_at(&solved.analysis, 4, 3), ForcedAnswer::Neither);
+        assert_eq!(forced_at_flat(&solved.analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at_flat(&solved.analysis, 4, 3), ForcedAnswer::Neither);
     }
 }

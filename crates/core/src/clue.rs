@@ -76,6 +76,8 @@ pub enum Direction {
     Below,
     Left,
     Right,
+    Front,
+    Back,
 }
 
 impl Direction {
@@ -85,6 +87,8 @@ impl Direction {
             Self::Below => "below",
             Self::Left => "left of",
             Self::Right => "right of",
+            Self::Front => "in front of",
+            Self::Back => "behind",
         }
     }
 
@@ -94,6 +98,8 @@ impl Direction {
             Self::Below => Offset::new(1, 0),
             Self::Left => Offset::new(0, -1),
             Self::Right => Offset::new(0, 1),
+            Self::Front => Offset::new_3d(-1, 0, 0),
+            Self::Back => Offset::new_3d(1, 0, 0),
         }
     }
 }
@@ -157,6 +163,7 @@ const fn display_row(row: u8) -> u8 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Line {
+    Layer(u8),
     Row(u8),
     Col(Column),
 }
@@ -164,6 +171,7 @@ pub enum Line {
 impl fmt::Display for Line {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Layer(layer) => write!(f, "layer {}", display_row(*layer)),
             Self::Row(row) => write!(f, "row {}", display_row(*row)),
             Self::Col(col) => write!(f, "col {col}"),
         }
@@ -203,6 +211,7 @@ pub enum CellSelector {
     Board,
     Neighbor { name: Name },
     Direction { name: Name, direction: Direction },
+    Layer { layer: u8 },
     Row { row: u8 },
     Col { col: Column },
     Between { first_name: Name, second_name: Name },
@@ -246,6 +255,12 @@ impl CellSelector {
                 count.describe(&format!("{answer}s")),
                 filter.suffix(),
             ),
+            Self::Layer { layer } => format!(
+                "Layer {} has {}{}",
+                display_row(*layer),
+                count.describe(&format!("{answer}s")),
+                filter.suffix(),
+            ),
             Self::Row { row } => format!(
                 "Row {} has {}{}",
                 display_row(*row),
@@ -283,6 +298,7 @@ impl CellSelector {
             Self::Direction { .. } | Self::Row { .. } | Self::Col { .. } | Self::Between { .. } => {
                 &[]
             }
+            Self::Layer { .. } => &[],
         }
     }
 
@@ -291,6 +307,7 @@ impl CellSelector {
             Self::Direction { direction, .. } => Some(direction.offset()),
             Self::Board
             | Self::Neighbor { .. }
+            | Self::Layer { .. }
             | Self::Row { .. }
             | Self::Col { .. }
             | Self::Between { .. }
@@ -300,7 +317,7 @@ impl CellSelector {
 
     fn rename_name_references(&mut self, from: &str, to: &str) {
         match self {
-            Self::Board | Self::Row { .. } | Self::Col { .. } => {}
+            Self::Board | Self::Layer { .. } | Self::Row { .. } | Self::Col { .. } => {}
             Self::Neighbor { name } => rename_name(name, from, to),
             Self::Direction { name, .. } => rename_name(name, from, to),
             Self::Between {
@@ -400,6 +417,8 @@ fn direction_scope_text(direction: Direction, name: &str) -> String {
         Direction::Below => format!("below {name}"),
         Direction::Left => format!("to the left of {name}"),
         Direction::Right => format!("to the right of {name}"),
+        Direction::Front => format!("in front of {name}"),
+        Direction::Back => format!("behind {name}"),
     }
 }
 
@@ -502,6 +521,9 @@ impl PersonGroup {
                             "{answer_text} {}{suffix}",
                             direction_scope_text(*direction, name)
                         )
+                    }
+                    CellSelector::Layer { layer } => {
+                        format!("{answer_text} in layer {}{suffix}", display_row(*layer))
                     }
                     CellSelector::Row { row } => {
                         format!("{answer_text} in row {}{suffix}", display_row(*row))
@@ -688,6 +710,11 @@ impl Clue {
                     direction,
                 } => format!(
                     "{name} is one of the {number} {answer}s {direction} {anchor_name}{}",
+                    filter.suffix(),
+                ),
+                CellSelector::Layer { layer } => format!(
+                    "{name} is one of the {number} {answer}s in layer {}{}",
+                    display_row(*layer),
                     filter.suffix(),
                 ),
                 CellSelector::Row { row } => format!(

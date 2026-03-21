@@ -32,6 +32,13 @@ pub struct Puzzle {
     pub cells: Vec<Vec<Cell>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Puzzle3D {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    pub cells: Vec<Vec<Vec<Cell>>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RenamePuzzleCellError {
     MissingName(Name),
@@ -41,8 +48,16 @@ pub enum RenamePuzzleCellError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PuzzleValidationError {
     EmptyPuzzle,
+    EmptyLayer {
+        layer: usize,
+    },
     EmptyRow {
         row: usize,
+    },
+    RaggedLayer {
+        layer: usize,
+        expected: usize,
+        actual: usize,
     },
     RaggedRow {
         row: usize,
@@ -117,6 +132,67 @@ impl Puzzle {
             for cell in row {
                 if !seen_names.insert(cell.name.clone()) {
                     return Err(PuzzleValidationError::DuplicateName(cell.name.clone()));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl Puzzle3D {
+    pub fn validate(&self) -> Result<(), PuzzleValidationError> {
+        let expected_rows = self
+            .cells
+            .first()
+            .ok_or(PuzzleValidationError::EmptyPuzzle)?
+            .len();
+        if expected_rows == 0 {
+            return Err(PuzzleValidationError::EmptyLayer { layer: 0 });
+        }
+
+        let expected_cols = self
+            .cells
+            .first()
+            .and_then(|layer| layer.first())
+            .ok_or(PuzzleValidationError::EmptyRow { row: 0 })?
+            .len();
+        if expected_cols == 0 {
+            return Err(PuzzleValidationError::EmptyRow { row: 0 });
+        }
+
+        let mut seen_names = HashSet::new();
+
+        for (layer_index, layer) in self.cells.iter().enumerate() {
+            if layer.is_empty() {
+                return Err(PuzzleValidationError::EmptyLayer { layer: layer_index });
+            }
+
+            if layer.len() != expected_rows {
+                return Err(PuzzleValidationError::RaggedLayer {
+                    layer: layer_index,
+                    expected: expected_rows,
+                    actual: layer.len(),
+                });
+            }
+
+            for (row_index, row) in layer.iter().enumerate() {
+                if row.is_empty() {
+                    return Err(PuzzleValidationError::EmptyRow { row: row_index });
+                }
+
+                if row.len() != expected_cols {
+                    return Err(PuzzleValidationError::RaggedRow {
+                        row: row_index,
+                        expected: expected_cols,
+                        actual: row.len(),
+                    });
+                }
+
+                for cell in row {
+                    if !seen_names.insert(cell.name.clone()) {
+                        return Err(PuzzleValidationError::DuplicateName(cell.name.clone()));
+                    }
                 }
             }
         }

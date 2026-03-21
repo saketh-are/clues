@@ -9,8 +9,11 @@ use crate::{
         Direction, Line, NONSENSE_TEXTS, Parity,
     },
     geometry::{BoardShape, Position},
-    puzzle::{Cell, Puzzle, Visibility},
-    solver::{ForcedAnswer, SolutionSet, SolveError, solve_clues_with_known_mask},
+    puzzle::{Cell, Puzzle, Puzzle3D, Visibility},
+    solver::{
+        FlatClueAnalysis, ForcedAnswer, SolutionSet, SolveError, solve_clues_with_known_mask,
+        solve_clues_with_known_mask_3d,
+    },
     types::{Answer, NAMES, Name, ROLES, Role},
 };
 
@@ -59,6 +62,16 @@ pub struct GeneratedPuzzle {
     pub generation_clue_texts: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeneratedPuzzle3D {
+    pub puzzle: Puzzle3D,
+    pub first_revealed_name: Name,
+    pub first_revealed_answer: Answer,
+    pub clue_score_terms: Vec<Vec<Vec<ClueScoreTerms>>>,
+    pub generation_score_series: Vec<ClueScoreTerms>,
+    pub generation_clue_texts: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenerateError {
     NotEnoughNames,
@@ -91,6 +104,14 @@ pub fn generate_puzzle_with_seed_and_size(
     generate_puzzle_with_rng(&mut rng, board)
 }
 
+pub fn generate_puzzle_3d_with_seed_and_size(
+    seed: u64,
+    board: BoardShape,
+) -> Result<GeneratedPuzzle3D, GenerateError> {
+    let mut rng = StdRng::seed_from_u64(seed);
+    generate_puzzle_3d_with_rng(&mut rng, board)
+}
+
 pub fn suggest_clue_for_known_tile(
     puzzle: &Puzzle,
     clues: &[Clue],
@@ -116,6 +137,13 @@ pub(crate) fn generate_puzzle_with_rng<R: Rng + ?Sized>(
     board: BoardShape,
 ) -> Result<GeneratedPuzzle, GenerateError> {
     generate_puzzle_with_rng_and_instrumentation(rng, board, None)
+}
+
+pub(crate) fn generate_puzzle_3d_with_rng<R: Rng + ?Sized>(
+    rng: &mut R,
+    board: BoardShape,
+) -> Result<GeneratedPuzzle3D, GenerateError> {
+    generate_puzzle_3d_with_rng_and_instrumentation(rng, board, None)
 }
 
 fn suggest_clue_for_known_tile_with_rng<R: Rng + ?Sized>(
@@ -290,6 +318,26 @@ fn generate_puzzle_with_rng_and_instrumentation<R: Rng + ?Sized>(
     Err(GenerateError::FailedToGenerate)
 }
 
+fn generate_puzzle_3d_with_rng_and_instrumentation<R: Rng + ?Sized>(
+    rng: &mut R,
+    board: BoardShape,
+    mut instrumentation: Option<&mut GenerationInstrumentation>,
+) -> Result<GeneratedPuzzle3D, GenerateError> {
+    for _ in 0..MAX_PUZZLE_ATTEMPTS {
+        let mut attempt_instrumentation = GenerationInstrumentation::default();
+        if let Some(generated) =
+            try_generate_puzzle_3d(rng, board, Some(&mut attempt_instrumentation))?
+        {
+            if let Some(global) = instrumentation.as_deref_mut() {
+                global.merge(attempt_instrumentation);
+            }
+            return Ok(generated);
+        }
+    }
+
+    Err(GenerateError::FailedToGenerate)
+}
+
 #[derive(Debug, Clone)]
 struct Layout {
     board: BoardShape,
@@ -334,16 +382,60 @@ impl Layout {
         }
     }
 
+    fn from_puzzle_3d(puzzle: &Puzzle3D, roles: Vec<Role>) -> Self {
+        let depth = puzzle.cells.len() as u8;
+        let rows = puzzle
+            .cells
+            .first()
+            .map(|layer| layer.len())
+            .unwrap_or_default() as u8;
+        let cols = puzzle
+            .cells
+            .first()
+            .and_then(|layer| layer.first())
+            .map(|row| row.len())
+            .unwrap_or_default() as u8;
+        let board = BoardShape::new_3d(depth, rows, cols);
+        let mut names = Vec::with_capacity(board.cell_count());
+        let mut positions_by_name = HashMap::new();
+        let mut indices_by_role: HashMap<Role, Vec<usize>> = HashMap::new();
+
+        for (layer_index, layer) in puzzle.cells.iter().enumerate() {
+            for (row_index, row) in layer.iter().enumerate() {
+                for (col_index, cell) in row.iter().enumerate() {
+                    let position =
+                        Position::new_3d(layer_index as i16, row_index as i16, col_index as i16);
+                    let index = board.index_of(position);
+                    names.push(cell.name.clone());
+                    positions_by_name.insert(cell.name.clone(), position);
+                    indices_by_role
+                        .entry(cell.role.clone())
+                        .or_default()
+                        .push(index);
+                }
+            }
+        }
+
+        Self {
+            board,
+            names,
+            roles,
+            positions_by_name,
+            indices_by_role,
+        }
+    }
+
     fn position_of_name(&self, name: &str) -> Position {
         self.positions_by_name[name]
     }
 
     fn index_of_position(&self, position: Position) -> usize {
-        position.row as usize * self.board.cols as usize + position.col as usize
+        self.board.index_of(position)
     }
 
     fn positions_for_line(&self, line: Line) -> Vec<Position> {
         match line {
+            Line::Layer(layer) => self.board.layer_positions(layer),
             Line::Row(row) => self.board.row_positions(row),
             Line::Col(col) => self.board.col_positions(col.index()),
         }
@@ -351,18 +443,14 @@ impl Layout {
 
     fn positions_for_selector(&self, selector: &CellSelector) -> Vec<Position> {
         match selector {
-            CellSelector::Board => (0..self.board.rows as usize)
-                .flat_map(|row| {
-                    (0..self.board.cols as usize)
-                        .map(move |col| Position::new(row as i16, col as i16))
-                })
-                .collect(),
+            CellSelector::Board => self.board.all_positions(),
             CellSelector::Neighbor { name } => {
                 self.board.touching_neighbors(self.position_of_name(name))
             }
             CellSelector::Direction { name, direction } => self
                 .board
                 .tiles_in_direction(self.position_of_name(name), direction.offset()),
+            CellSelector::Layer { layer } => self.board.layer_positions(*layer),
             CellSelector::Row { row } => self.board.row_positions(*row),
             CellSelector::Col { col } => self.board.col_positions(col.index()),
             CellSelector::Between {
@@ -371,12 +459,7 @@ impl Layout {
             } => {
                 let first = self.position_of_name(first_name);
                 let second = self.position_of_name(second_name);
-
-                if first.row == second.row || first.col == second.col {
-                    self.board.positions_between(first, second)
-                } else {
-                    Vec::new()
-                }
+                self.board.positions_between(first, second)
             }
             CellSelector::SharedNeighbor {
                 first_name,
@@ -455,7 +538,7 @@ impl GenerationInstrumentation {
 }
 
 fn cell_count(board: BoardShape) -> usize {
-    board.rows as usize * board.cols as usize
+    board.cell_count()
 }
 
 fn full_mask_for_cell_count(cell_count: usize) -> u32 {
@@ -765,6 +848,322 @@ fn try_generate_puzzle<R: Rng + ?Sized>(
     }))
 }
 
+fn try_generate_puzzle_3d<R: Rng + ?Sized>(
+    rng: &mut R,
+    board: BoardShape,
+    mut instrumentation: Option<&mut GenerationInstrumentation>,
+) -> Result<Option<GeneratedPuzzle3D>, GenerateError> {
+    let cell_count = cell_count(board);
+    if cell_count > MAX_CELL_COUNT {
+        return Err(GenerateError::TooManyCells(cell_count));
+    }
+
+    if NAMES.len() < cell_count {
+        return Err(GenerateError::NotEnoughNames);
+    }
+
+    if ROLES.len() < MIN_ROLE_POOL_SIZE {
+        return Err(GenerateError::NotEnoughRoles);
+    }
+
+    let names = sample_names(rng, cell_count);
+    let roles = sample_roles(rng, &names, cell_count)?;
+    let mut puzzle = empty_puzzle_3d(board, &names, &roles);
+    let layout = Layout::from_puzzle_3d(
+        &puzzle,
+        distinct_roles(
+            &puzzle
+                .cells
+                .iter()
+                .flat_map(|layer| layer.iter().flat_map(|row| row.iter()))
+                .map(|cell| cell.role.clone())
+                .collect::<Vec<_>>(),
+        ),
+    );
+
+    let first_index = rng.gen_range(0..cell_count);
+    let first_answer = random_answer(rng);
+
+    let mut clues = vec![None; cell_count];
+    let mut clue_score_terms = vec![None; cell_count];
+    let mut generation_score_series = Vec::with_capacity(cell_count);
+    let mut generation_clue_texts = Vec::with_capacity(cell_count);
+    let mut answers = vec![None; cell_count];
+    let mut known_mask = 0u32;
+    let mut known_innocent_mask = 0u32;
+    let mut pending = vec![first_index];
+    let full_mask = full_mask_for_cell_count(cell_count);
+
+    reveal_answer(
+        &mut answers,
+        &mut known_mask,
+        &mut known_innocent_mask,
+        first_index,
+        first_answer,
+    );
+
+    while let Some(current_index) = pending.pop() {
+        let current_answer = answers[current_index].unwrap();
+        let current_clues = collect_clues(&clues);
+        let explicit_baseline = solve_clues_with_known_mask_3d(
+            &puzzle,
+            &current_clues,
+            known_mask,
+            known_innocent_mask,
+        )?;
+
+        if !explicit_baseline.analysis.has_solution {
+            return Ok(None);
+        }
+
+        let (closed_known_mask, closed_known_innocent_mask) = closure_known_masks_from_analysis(
+            &explicit_baseline.analysis,
+            known_mask,
+            known_innocent_mask,
+        );
+        enqueue_forced_closure_indices(
+            rng,
+            &mut answers,
+            &clues,
+            &mut known_mask,
+            &mut known_innocent_mask,
+            &mut pending,
+            &explicit_baseline.analysis,
+            Some(current_index),
+        );
+        let revealed_only = solve_clues_with_known_mask_3d(
+            &puzzle,
+            &[],
+            closed_known_mask,
+            closed_known_innocent_mask,
+        )?;
+        let baseline = solve_clues_with_known_mask_3d(
+            &puzzle,
+            &current_clues,
+            closed_known_mask,
+            closed_known_innocent_mask,
+        )?;
+
+        if !revealed_only.analysis.has_solution || !baseline.analysis.has_solution {
+            return Ok(None);
+        }
+
+        let require_new_force = has_unforced_unknown(&baseline.analysis, known_mask);
+        let mut candidates = Vec::new();
+
+        for _ in 0..MAX_CLUE_ATTEMPTS {
+            let Some(witness) = sample_witness_assignment(rng, &baseline, closed_known_mask) else {
+                return Ok(None);
+            };
+
+            let Some(candidate) = sample_clue(rng, &layout, witness) else {
+                continue;
+            };
+
+            let mut next_clues = current_clues.clone();
+            next_clues.push(candidate.clone());
+
+            let solved = solve_clues_with_known_mask_3d(
+                &puzzle,
+                &next_clues,
+                closed_known_mask,
+                closed_known_innocent_mask,
+            )?;
+
+            if !solved.analysis.has_solution {
+                continue;
+            }
+
+            let (candidate, solution, newly_forced, forced_unknown) = normalize_generated_clue(
+                rng,
+                candidate,
+                current_answer,
+                &baseline,
+                &solved,
+                closed_known_mask,
+            );
+
+            if require_new_force && newly_forced.is_empty() {
+                continue;
+            }
+
+            if closed_known_mask != full_mask && forced_unknown.is_empty() {
+                continue;
+            }
+
+            let alone = solve_clues_with_known_mask_3d(
+                &puzzle,
+                &[candidate.clone()],
+                closed_known_mask,
+                closed_known_innocent_mask,
+            )?;
+
+            if !alone.analysis.has_solution {
+                continue;
+            }
+
+            let standalone_forced = forced_unknown_indices(&alone.analysis, closed_known_mask);
+            let combination_only_forced = newly_forced
+                .iter()
+                .copied()
+                .filter(|index| forced_answer_at(&alone.analysis, *index) == ForcedAnswer::Neither)
+                .collect::<Vec<_>>();
+
+            if let Some(stats) = instrumentation.as_deref_mut() {
+                if !newly_forced.is_empty() {
+                    stats.candidate_newly_forced_count += 1;
+                }
+                if standalone_forced.is_empty() {
+                    stats.candidate_standalone_zero_count += 1;
+                }
+                if !combination_only_forced.is_empty() {
+                    stats.candidate_combination_only_count += 1;
+                }
+                if !combination_only_forced.is_empty() && standalone_forced.is_empty() {
+                    stats.candidate_combo_eligible_count += 1;
+                }
+            }
+
+            let mut effective_clues = current_clues.clone();
+            effective_clues.push(candidate.clone());
+            let target_indices = if !newly_forced.is_empty() {
+                &newly_forced
+            } else {
+                &forced_unknown
+            };
+            let targets = target_indices
+                .iter()
+                .filter_map(|index| {
+                    let forced = forced_answer_at(&solution.analysis, *index);
+                    (forced != ForcedAnswer::Neither).then_some((*index, forced))
+                })
+                .collect::<Vec<_>>();
+            let combination_size = minimal_forcing_subset_size_3d(
+                &puzzle,
+                &effective_clues,
+                closed_known_mask,
+                closed_known_innocent_mask,
+                &targets,
+            )?;
+            if let Some(stats) = instrumentation.as_deref_mut() {
+                stats.candidate_combination_sizes.push(combination_size);
+            }
+            let terms = build_clue_score_terms(
+                &layout,
+                &candidate,
+                &revealed_only,
+                &alone,
+                &baseline,
+                &solution,
+                &newly_forced,
+                combination_size,
+                closed_known_mask,
+            );
+
+            candidates.push(ScoredCandidate {
+                clue: candidate,
+                solution,
+                terms,
+            });
+
+            if candidates.len() >= MAX_SCORED_CANDIDATES {
+                break;
+            }
+        }
+
+        let Some(selected) = choose_scored_candidate(rng, candidates) else {
+            return Ok(None);
+        };
+        let ScoredCandidate {
+            clue: candidate,
+            solution,
+            terms,
+        } = selected;
+        if let Some(stats) = instrumentation.as_deref_mut() {
+            stats
+                .selected_combination_sizes
+                .push(terms.combination_size);
+        }
+        let analysis = solution.analysis;
+
+        clues[current_index] = Some(candidate);
+        clue_score_terms[current_index] = Some(terms);
+        generation_score_series.push(clue_score_terms[current_index].clone().unwrap());
+        generation_clue_texts.push(clues[current_index].as_ref().unwrap().text());
+
+        enqueue_forced_closure_indices(
+            rng,
+            &mut answers,
+            &clues,
+            &mut known_mask,
+            &mut known_innocent_mask,
+            &mut pending,
+            &analysis,
+            None,
+        );
+
+        if known_mask == full_mask {
+            continue;
+        }
+
+        if pending.is_empty() {
+            return Ok(None);
+        }
+    }
+
+    if known_mask != full_mask || clues.iter().any(Option::is_none) {
+        return Ok(None);
+    }
+
+    for layer in 0..board.depth as usize {
+        for row in 0..board.rows as usize {
+            for col in 0..board.cols as usize {
+                let index =
+                    board.index_of(Position::new_3d(layer as i16, row as i16, col as i16));
+                puzzle.cells[layer][row][col].clue = clues[index].clone().unwrap();
+                puzzle.cells[layer][row][col].answer = answers[index].unwrap();
+                puzzle.cells[layer][row][col].state = if index == first_index {
+                    Visibility::Revealed
+                } else {
+                    Visibility::Hidden
+                };
+            }
+        }
+    }
+
+    let first_position = board.position_of_index(first_index);
+
+    Ok(Some(GeneratedPuzzle3D {
+        first_revealed_name: puzzle.cells[first_position.layer as usize][first_position.row as usize]
+            [first_position.col as usize]
+            .name
+            .clone(),
+        first_revealed_answer: first_answer,
+        clue_score_terms: (0..board.depth as usize)
+            .map(|layer| {
+                (0..board.rows as usize)
+                    .map(|row| {
+                        (0..board.cols as usize)
+                            .map(|col| {
+                                clue_score_terms[board.index_of(Position::new_3d(
+                                    layer as i16,
+                                    row as i16,
+                                    col as i16,
+                                ))]
+                                .clone()
+                                .unwrap()
+                            })
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect(),
+        generation_score_series,
+        generation_clue_texts,
+        puzzle,
+    }))
+}
+
 fn sample_names<R: Rng + ?Sized>(rng: &mut R, cell_count: usize) -> Vec<Name> {
     let mut names = NAMES
         .iter()
@@ -858,6 +1257,45 @@ fn empty_puzzle(board: BoardShape, names: &[Name], roles: &[Role]) -> Puzzle {
     }
 }
 
+fn empty_puzzle_3d(board: BoardShape, names: &[Name], roles: &[Role]) -> Puzzle3D {
+    let cells = (0..board.depth as usize)
+        .map(|layer| {
+            (0..board.rows as usize)
+                .map(|row| {
+                    (0..board.cols as usize)
+                        .map(|col| {
+                            let index = board.index_of(Position::new_3d(
+                                layer as i16,
+                                row as i16,
+                                col as i16,
+                            ));
+                            let role = if names[index] == SID_NAME {
+                                BAKER_ROLE.to_string()
+                            } else {
+                                roles[index].clone()
+                            };
+
+                            Cell {
+                                name: names[index].clone(),
+                                role,
+                                emoji: None,
+                                clue: default_nonsense_clue(),
+                                answer: Answer::Innocent,
+                                state: Visibility::Hidden,
+                            }
+                        })
+                        .collect()
+                })
+                .collect()
+        })
+        .collect();
+
+    Puzzle3D {
+        author: None,
+        cells,
+    }
+}
+
 fn collect_clues(clues: &[Option<Clue>]) -> Vec<Clue> {
     clues.iter().flatten().cloned().collect()
 }
@@ -880,16 +1318,11 @@ fn reveal_answer(
 }
 
 fn closure_known_masks_from_analysis(
-    analysis: &crate::solver::ClueAnalysis,
+    analysis: &FlatClueAnalysis,
     known_mask: u32,
     known_innocent_mask: u32,
 ) -> (u32, u32) {
-    let cell_count = analysis
-        .forced_answers
-        .first()
-        .map(|row| row.len())
-        .unwrap_or_default()
-        * analysis.forced_answers.len();
+    let cell_count = analysis.forced_answers.len();
     let mut closed_known_mask = known_mask;
     let mut closed_known_innocent_mask = known_innocent_mask & known_mask;
 
@@ -922,7 +1355,7 @@ fn enqueue_forced_closure_indices<R: Rng + ?Sized>(
     known_mask: &mut u32,
     known_innocent_mask: &mut u32,
     pending: &mut Vec<usize>,
-    analysis: &crate::solver::ClueAnalysis,
+    analysis: &FlatClueAnalysis,
     exclude_index: Option<usize>,
 ) {
     let mut promoted = Vec::new();
@@ -1099,6 +1532,8 @@ fn sample_direct_relation_clue<R: Rng + ?Sized>(
         Direction::Below,
         Direction::Left,
         Direction::Right,
+        Direction::Front,
+        Direction::Back,
     ]
     .into_iter()
     .filter(|direction| layout.board.contains(position.shifted(direction.offset())))
@@ -1166,12 +1601,19 @@ fn sample_line_comparison_clue<R: Rng + ?Sized>(
     assignment: u32,
 ) -> Option<Clue> {
     let compare_rows = rng.gen_bool(0.5);
-    let lines = if compare_rows {
-        (0..layout.board.rows).map(Line::Row).collect::<Vec<_>>()
+    let line_family = if layout.board.depth > 1 {
+        rng.gen_range(0..3)
+    } else if compare_rows {
+        1
     } else {
-        (0..layout.board.cols)
+        2
+    };
+    let lines = match line_family {
+        0 => (0..layout.board.depth).map(Line::Layer).collect::<Vec<_>>(),
+        1 => (0..layout.board.rows).map(Line::Row).collect::<Vec<_>>(),
+        _ => (0..layout.board.cols)
             .map(|index| Line::Col(Column::new(index)))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
     };
     let first_line = *lines.choose(rng)?;
     let second_line = **lines
@@ -1207,7 +1649,10 @@ fn sample_selector<R: Rng + ?Sized>(rng: &mut R, layout: &Layout) -> Option<Cell
         },
         2 => CellSelector::Direction {
             name: layout.names.choose(rng)?.clone(),
-            direction: random_direction(rng),
+            direction: random_direction(rng, layout.board),
+        },
+        3 if layout.board.depth > 1 => CellSelector::Layer {
+            layer: rng.gen_range(0..layout.board.depth),
         },
         3 => CellSelector::Row {
             row: rng.gen_range(0..layout.board.rows),
@@ -1246,6 +1691,9 @@ fn sample_filter_for_selector<R: Rng + ?Sized>(
         0 => CellFilter::Any,
         1 => CellFilter::Edge,
         2 => CellFilter::Corner,
+        3 if layout.board.depth > 1 => {
+            CellFilter::Line(Line::Layer(rng.gen_range(0..layout.board.depth)))
+        }
         3 => CellFilter::Line(Line::Row(rng.gen_range(0..layout.board.rows))),
         _ => CellFilter::Line(Line::Col(random_column(rng, layout.board.cols))),
     }
@@ -1269,13 +1717,7 @@ fn sample_witness_assignment<R: Rng + ?Sized>(
     known_mask: u32,
 ) -> Option<u32> {
     let partial = *solution.assignments.choose(rng)?;
-    let cell_count = solution.analysis.forced_answers.len()
-        * solution
-            .analysis
-            .forced_answers
-            .first()
-            .map(|row| row.len())
-            .unwrap_or_default();
+    let cell_count = solution.analysis.forced_answers.len();
     let free_mask = full_mask_for_cell_count(cell_count) & !known_mask & !solution.variable_mask;
 
     Some(partial | (rng.r#gen::<u32>() & free_mask))
@@ -1328,12 +1770,6 @@ fn random_nonsense_clue<R: Rng + ?Sized>(rng: &mut R, answer: Answer) -> Clue {
 
 fn remaining_possibility_count(solution: &crate::solver::SolutionSet, known_mask: u32) -> u64 {
     let free_unknown_bits = solution.analysis.forced_answers.len() as u32
-        * solution
-            .analysis
-            .forced_answers
-            .first()
-            .map(|row| row.len())
-            .unwrap_or_default() as u32
         - known_mask.count_ones()
         - solution.variable_mask.count_ones();
 
@@ -1381,6 +1817,44 @@ fn minimal_forcing_subset_size(
     Ok(greedy_size)
 }
 
+fn minimal_forcing_subset_size_3d(
+    puzzle: &Puzzle3D,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<usize, SolveError> {
+    if targets.is_empty() {
+        return Ok(0);
+    }
+
+    let greedy_size = greedy_forcing_subset_size_3d(
+        puzzle,
+        clues,
+        known_mask,
+        known_innocent_mask,
+        targets,
+    )?;
+    if greedy_size <= 1 {
+        return Ok(greedy_size);
+    }
+
+    for subset_size in 1..greedy_size {
+        if exists_forcing_subset_of_size_3d(
+            puzzle,
+            clues,
+            subset_size,
+            known_mask,
+            known_innocent_mask,
+            targets,
+        )? {
+            return Ok(subset_size);
+        }
+    }
+
+    Ok(greedy_size)
+}
+
 fn greedy_forcing_subset_size(
     puzzle: &Puzzle,
     clues: &[Clue],
@@ -1397,6 +1871,43 @@ fn greedy_forcing_subset_size(
             let mut trial = active.clone();
             trial.remove(index);
             if subset_forces_any_target(puzzle, &trial, known_mask, known_innocent_mask, targets)? {
+                removable_index = Some(index);
+                break;
+            }
+        }
+
+        let Some(index) = removable_index else {
+            break;
+        };
+
+        active.remove(index);
+    }
+
+    Ok(active.len())
+}
+
+fn greedy_forcing_subset_size_3d(
+    puzzle: &Puzzle3D,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<usize, SolveError> {
+    let mut active = clues.to_vec();
+
+    loop {
+        let mut removable_index = None;
+
+        for index in 0..active.len() {
+            let mut trial = active.clone();
+            trial.remove(index);
+            if subset_forces_any_target_3d(
+                puzzle,
+                &trial,
+                known_mask,
+                known_innocent_mask,
+                targets,
+            )? {
                 removable_index = Some(index);
                 break;
             }
@@ -1441,6 +1952,35 @@ fn exists_forcing_subset_of_size(
     }
 }
 
+fn exists_forcing_subset_of_size_3d(
+    puzzle: &Puzzle3D,
+    clues: &[Clue],
+    subset_size: usize,
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<bool, SolveError> {
+    if subset_size == 0 || subset_size > clues.len() {
+        return Ok(false);
+    }
+
+    let mut indices = (0..subset_size).collect::<Vec<_>>();
+    let mut trial = Vec::with_capacity(subset_size);
+
+    loop {
+        trial.clear();
+        trial.extend(indices.iter().map(|&index| clues[index].clone()));
+
+        if subset_forces_any_target_3d(puzzle, &trial, known_mask, known_innocent_mask, targets)? {
+            return Ok(true);
+        }
+
+        if !advance_combination_indices(&mut indices, clues.len()) {
+            return Ok(false);
+        }
+    }
+}
+
 fn advance_combination_indices(indices: &mut [usize], source_len: usize) -> bool {
     let width = indices.len();
 
@@ -1471,8 +2011,19 @@ fn subset_forces_any_target(
     Ok(solved.analysis.has_solution && forces_any_target(&solved.analysis, targets))
 }
 
+fn subset_forces_any_target_3d(
+    puzzle: &Puzzle3D,
+    clues: &[Clue],
+    known_mask: u32,
+    known_innocent_mask: u32,
+    targets: &[(usize, ForcedAnswer)],
+) -> Result<bool, SolveError> {
+    let solved = solve_clues_with_known_mask_3d(puzzle, clues, known_mask, known_innocent_mask)?;
+    Ok(solved.analysis.has_solution && forces_any_target(&solved.analysis, targets))
+}
+
 fn forces_any_target(
-    analysis: &crate::solver::ClueAnalysis,
+    analysis: &FlatClueAnalysis,
     targets: &[(usize, ForcedAnswer)],
 ) -> bool {
     targets
@@ -1601,13 +2152,8 @@ fn synergy_bonus(synergy_gain: f64, combination_size: usize, standalone_forced: 
     }
 }
 
-fn analysis_cell_count(analysis: &crate::solver::ClueAnalysis) -> usize {
+fn analysis_cell_count(analysis: &FlatClueAnalysis) -> usize {
     analysis.forced_answers.len()
-        * analysis
-            .forced_answers
-            .first()
-            .map(|row| row.len())
-            .unwrap_or_default()
 }
 
 fn active_unforced_tile_count(solution: &SolutionSet, known_mask: u32) -> usize {
@@ -1681,7 +2227,9 @@ fn family_weight(clue: &Clue) -> f64 {
                 Count::Number(_) => {
                     let selector_weight = match selector {
                         CellSelector::Board => -1.3,
-                        CellSelector::Row { .. } | CellSelector::Col { .. } => -1.0,
+                        CellSelector::Layer { .. }
+                        | CellSelector::Row { .. }
+                        | CellSelector::Col { .. } => -1.0,
                         CellSelector::Direction { .. } => -0.5,
                         CellSelector::Neighbor { .. }
                         | CellSelector::Between { .. }
@@ -1698,7 +2246,9 @@ fn family_weight(clue: &Clue) -> f64 {
             let filter_bonus = if *filter == CellFilter::Any { 0.0 } else { 0.2 };
             let selector_weight = match selector {
                 CellSelector::Board => -1.0,
-                CellSelector::Row { .. } | CellSelector::Col { .. } => -0.7,
+                CellSelector::Layer { .. }
+                | CellSelector::Row { .. }
+                | CellSelector::Col { .. } => -0.7,
                 CellSelector::Direction { .. } => -0.2,
                 CellSelector::Neighbor { .. }
                 | CellSelector::Between { .. }
@@ -1813,8 +2363,8 @@ fn choose_scored_candidate<R: Rng + ?Sized>(
 }
 
 fn newly_forced_unknown_indices(
-    baseline: &crate::solver::ClueAnalysis,
-    next: &crate::solver::ClueAnalysis,
+    baseline: &FlatClueAnalysis,
+    next: &FlatClueAnalysis,
     known_mask: u32,
 ) -> Vec<usize> {
     (0..analysis_cell_count(next))
@@ -1824,27 +2374,21 @@ fn newly_forced_unknown_indices(
         .collect()
 }
 
-fn forced_unknown_indices(analysis: &crate::solver::ClueAnalysis, known_mask: u32) -> Vec<usize> {
+fn forced_unknown_indices(analysis: &FlatClueAnalysis, known_mask: u32) -> Vec<usize> {
     (0..analysis_cell_count(analysis))
         .filter(|index| known_mask & (1u32 << index) == 0)
         .filter(|index| forced_answer_at(analysis, *index) != ForcedAnswer::Neither)
         .collect()
 }
 
-fn has_unforced_unknown(analysis: &crate::solver::ClueAnalysis, known_mask: u32) -> bool {
+fn has_unforced_unknown(analysis: &FlatClueAnalysis, known_mask: u32) -> bool {
     (0..analysis_cell_count(analysis))
         .filter(|index| known_mask & (1u32 << index) == 0)
         .any(|index| forced_answer_at(analysis, index) == ForcedAnswer::Neither)
 }
 
-fn forced_answer_at(analysis: &crate::solver::ClueAnalysis, index: usize) -> ForcedAnswer {
-    let cols = analysis
-        .forced_answers
-        .first()
-        .map(|row| row.len())
-        .unwrap_or_default();
-
-    analysis.forced_answers[index / cols][index % cols]
+fn forced_answer_at(analysis: &FlatClueAnalysis, index: usize) -> ForcedAnswer {
+    analysis.forced_answers[index]
 }
 
 fn forced_answer_as_answer(forced: ForcedAnswer) -> Option<Answer> {
@@ -1881,12 +2425,14 @@ fn comparison_from_truth(left: usize, right: usize) -> Comparison {
     }
 }
 
-fn random_direction<R: Rng + ?Sized>(rng: &mut R) -> Direction {
-    match rng.gen_range(0..4) {
+fn random_direction<R: Rng + ?Sized>(rng: &mut R, board: BoardShape) -> Direction {
+    match rng.gen_range(0..if board.depth > 1 { 6 } else { 4 }) {
         0 => Direction::Above,
         1 => Direction::Below,
         2 => Direction::Left,
-        _ => Direction::Right,
+        3 => Direction::Right,
+        4 => Direction::Front,
+        _ => Direction::Back,
     }
 }
 
@@ -1923,7 +2469,7 @@ mod tests {
             NONSENSE_TEXTS, Parity,
         },
         geometry::{BoardShape, Position},
-        solver::{ClueAnalysis, SolutionSet, solve_clues_with_known_mask},
+        solver::{FlatClueAnalysis, SolutionSet, solve_clues_with_known_mask},
         types::NAMES,
     };
 
@@ -1940,11 +2486,16 @@ mod tests {
         suggest_clue_for_known_tile_with_rng,
     };
 
-    fn blank_analysis() -> ClueAnalysis {
-        ClueAnalysis {
+    fn blank_analysis() -> FlatClueAnalysis {
+        FlatClueAnalysis {
             has_solution: true,
-            forced_answers: vec![vec![ForcedAnswer::Neither; COLS]; ROWS],
+            board: BoardShape::new(ROWS as u8, COLS as u8),
+            forced_answers: vec![ForcedAnswer::Neither; CELL_COUNT],
         }
+    }
+
+    fn forced_at(analysis: &FlatClueAnalysis, row: usize, col: usize) -> ForcedAnswer {
+        analysis.forced_answers[row * COLS + col]
     }
 
     #[test]
@@ -1980,7 +2531,7 @@ mod tests {
 
         for row in 0..ROWS {
             for col in 0..COLS {
-                let forced = solved.analysis.forced_answers[row][col];
+                let forced = forced_at(&solved.analysis, row, col);
                 let answer = generated.puzzle.cells[row][col].answer;
 
                 assert_eq!(
@@ -2048,6 +2599,27 @@ mod tests {
         assert_eq!(generated.puzzle.cells[0].len(), 2);
         assert_eq!(generated.clue_score_terms.len(), 2);
         assert_eq!(generated.clue_score_terms[0].len(), 2);
+    }
+
+    #[test]
+    fn generated_puzzle_supports_2x2x2_board_size() {
+        let generated =
+            super::generate_puzzle_3d_with_seed_and_size(7, BoardShape::new_3d(2, 2, 2)).unwrap();
+
+        assert_eq!(generated.puzzle.cells.len(), 2);
+        assert_eq!(generated.puzzle.cells[0].len(), 2);
+        assert_eq!(generated.puzzle.cells[0][0].len(), 2);
+
+        let revealed_count = generated
+            .puzzle
+            .cells
+            .iter()
+            .flatten()
+            .flatten()
+            .filter(|cell| cell.state == crate::puzzle::Visibility::Revealed)
+            .count();
+
+        assert_eq!(revealed_count, 1);
     }
 
     #[test]
@@ -2148,9 +2720,10 @@ mod tests {
             count: Count::Number(20),
             filter: CellFilter::Any,
         };
-        let solved_analysis = ClueAnalysis {
+        let solved_analysis = FlatClueAnalysis {
             has_solution: true,
-            forced_answers: vec![vec![ForcedAnswer::Innocent; COLS]; ROWS],
+            board: BoardShape::new(ROWS as u8, COLS as u8),
+            forced_answers: vec![ForcedAnswer::Innocent; CELL_COUNT],
         };
         let baseline = SolutionSet {
             analysis: blank_analysis(),
@@ -2367,7 +2940,7 @@ mod tests {
     #[test]
     fn active_state_metrics_reward_unforced_implicated_tiles() {
         let mut analysis = blank_analysis();
-        analysis.forced_answers[0][1] = ForcedAnswer::Innocent;
+        analysis.forced_answers[1] = ForcedAnswer::Innocent;
         let solution = SolutionSet {
             analysis,
             assignments: vec![0b0000, 0b0001],
@@ -2420,7 +2993,7 @@ mod tests {
         ];
         let solved = solve_clues_with_known_mask(&puzzle, &clues, 0, 0).unwrap();
 
-        assert_eq!(solved.analysis.forced_answers[0][1], ForcedAnswer::Criminal);
+        assert_eq!(forced_at(&solved.analysis, 0, 1), ForcedAnswer::Criminal);
 
         let subset_size =
             minimal_forcing_subset_size(&puzzle, &clues, 0, 0, &[(1, ForcedAnswer::Criminal)])

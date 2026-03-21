@@ -11,8 +11,9 @@ use axum::{
 };
 use clues_core::{
     Answer, BoardShape, Clue, ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, ForcedAnswer,
-    GeneratedPuzzle, Puzzle, PuzzleValidationError, StoredPuzzle, Visibility,
-    analyze_revealed_puzzle, generate_puzzle_with_seed_and_size,
+    GeneratedPuzzle, GeneratedPuzzle3D, Puzzle, Puzzle3D, PuzzleValidationError, StoredPuzzle,
+    Visibility, analyze_revealed_puzzle, analyze_revealed_puzzle_3d,
+    generate_puzzle_3d_with_seed_and_size, generate_puzzle_with_seed_and_size,
 };
 use editor::{
     EditorAction, EditorBootstrapResponse, EditorDraftPuzzle, EditorError, EditorErrorKind,
@@ -38,6 +39,7 @@ struct AppState {
 #[derive(Debug, Deserialize)]
 struct NewPuzzleParams {
     seed: Option<String>,
+    depth: Option<u8>,
     rows: Option<u8>,
     cols: Option<u8>,
 }
@@ -52,6 +54,15 @@ struct PuzzleResponse {
     cells: Vec<Vec<CellResponse>>,
     generated_score_series: Vec<ClueScoreTerms>,
     generated_clue_texts: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct Puzzle3DResponse {
+    seed: Option<String>,
+    depth: u8,
+    rows: u8,
+    cols: u8,
+    cells: Vec<Vec<Vec<CellResponse>>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +94,28 @@ struct GuessRequest {
     source: PuzzleSource,
     #[serde(default)]
     moves: Vec<AppliedGuess>,
+    row: usize,
+    col: usize,
+    guess: Answer,
+}
+
+#[derive(Debug, Deserialize)]
+struct Guess3DRequest {
+    seed: String,
+    depth: u8,
+    rows: u8,
+    cols: u8,
+    #[serde(default)]
+    moves: Vec<AppliedGuess3D>,
+    layer: usize,
+    row: usize,
+    col: usize,
+    guess: Answer,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct AppliedGuess3D {
+    layer: usize,
     row: usize,
     col: usize,
     guess: Answer,
@@ -155,10 +188,14 @@ async fn main() {
     let static_dir = format!("{}/static", env!("CARGO_MANIFEST_DIR"));
     let app = Router::new()
         .route("/", get(index_html))
+        .route("/3d", get(index_3d_html))
+        .route("/3d/", get(index_3d_html))
         .route("/edit", get(edit_html))
         .route("/p/{stored_puzzle_id}", get(index_html))
         .route("/api/puzzles/new", get(new_puzzle))
         .route("/api/puzzles/guess", post(guess_cell))
+        .route("/api/3d/puzzles/new", get(new_puzzle_3d))
+        .route("/api/3d/puzzles/guess", post(guess_cell_3d))
         .route("/api/editor/bootstrap", get(editor_bootstrap_handler))
         .route("/api/editor/new", post(new_editor_puzzle))
         .route("/api/editor/describe", post(describe_editor_puzzle))
@@ -197,12 +234,31 @@ async fn edit_html() -> impl IntoResponse {
     )
 }
 
+async fn index_3d_html() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(include_str!("../static/3d.html")),
+    )
+}
+
 async fn new_puzzle(
     Query(params): Query<NewPuzzleParams>,
 ) -> Result<Json<PuzzleResponse>, AppError> {
     let (seed, generated) =
         generate_requested_puzzle(params.seed.as_deref(), params.rows, params.cols)?;
     Ok(Json(PuzzleResponse::from_generated(seed, &generated)))
+}
+
+async fn new_puzzle_3d(
+    Query(params): Query<NewPuzzleParams>,
+) -> Result<Json<Puzzle3DResponse>, AppError> {
+    let (seed, generated) = generate_requested_puzzle_3d(
+        params.seed.as_deref(),
+        params.depth,
+        params.rows,
+        params.cols,
+    )?;
+    Ok(Json(Puzzle3DResponse::from_generated(seed, &generated)))
 }
 
 async fn create_stored_puzzle(
@@ -327,6 +383,33 @@ async fn guess_cell(
     }))
 }
 
+async fn guess_cell_3d(Json(request): Json<Guess3DRequest>) -> Result<Json<GuessResponse>, AppError> {
+    let Guess3DRequest {
+        seed,
+        depth,
+        rows,
+        cols,
+        moves,
+        layer,
+        row,
+        col,
+        guess,
+    } = request;
+
+    let (_, generated) =
+        generate_requested_puzzle_3d(Some(seed.as_str()), Some(depth), Some(rows), Some(cols))?;
+    let mut puzzle = generated.puzzle;
+
+    replay_moves_3d(&mut puzzle, &moves)?;
+    validate_and_reveal_guess_3d(&mut puzzle, layer, row, col, guess)?;
+
+    Ok(Json(GuessResponse {
+        clue: puzzle.cells[layer][row][col].clue.text(),
+        is_nonsense: matches!(puzzle.cells[layer][row][col].clue, clues_core::Clue::Nonsense { .. }),
+        score_terms: None,
+    }))
+}
+
 fn generate_requested_puzzle(
     seed: Option<&str>,
     rows: Option<u8>,
@@ -339,6 +422,22 @@ fn generate_requested_puzzle(
     let board = parse_board_shape(rows, cols)?;
     let generated = generate_puzzle_with_seed_and_size(seed, board)
         .map_err(|error| AppError::internal(format!("failed to generate puzzle: {error:?}")))?;
+    Ok((seed, generated))
+}
+
+fn generate_requested_puzzle_3d(
+    seed: Option<&str>,
+    depth: Option<u8>,
+    rows: Option<u8>,
+    cols: Option<u8>,
+) -> Result<(u64, GeneratedPuzzle3D), AppError> {
+    let seed = match seed {
+        Some(seed) => parse_seed(seed)?,
+        None => random::<u64>() & SEED_MASK,
+    };
+    let board = parse_board_shape_3d(depth, rows, cols)?;
+    let generated = generate_puzzle_3d_with_seed_and_size(seed, board)
+        .map_err(|error| AppError::internal(format!("failed to generate 3d puzzle: {error:?}")))?;
     Ok((seed, generated))
 }
 
@@ -399,6 +498,20 @@ fn replay_moves(puzzle: &mut Puzzle, moves: &[AppliedGuess]) -> Result<(), AppEr
     Ok(())
 }
 
+fn replay_moves_3d(puzzle: &mut Puzzle3D, moves: &[AppliedGuess3D]) -> Result<(), AppError> {
+    for prior_move in moves {
+        validate_and_reveal_guess_3d(
+            puzzle,
+            prior_move.layer,
+            prior_move.row,
+            prior_move.col,
+            prior_move.guess,
+        )?;
+    }
+
+    Ok(())
+}
+
 fn validate_and_reveal_guess(
     puzzle: &mut Puzzle,
     row: usize,
@@ -454,6 +567,65 @@ fn validate_and_reveal_guess(
     Ok(())
 }
 
+fn validate_and_reveal_guess_3d(
+    puzzle: &mut Puzzle3D,
+    layer: usize,
+    row: usize,
+    col: usize,
+    guess: Answer,
+) -> Result<(), AppError> {
+    {
+        let layer_cells = puzzle
+            .cells
+            .get(layer)
+            .ok_or_else(|| AppError::bad_request("layer out of bounds"))?;
+        let row_cells = layer_cells
+            .get(row)
+            .ok_or_else(|| AppError::bad_request("row out of bounds"))?;
+        let cell = row_cells
+            .get(col)
+            .ok_or_else(|| AppError::bad_request("col out of bounds"))?;
+
+        if cell.state == Visibility::Revealed {
+            return Err(AppError::bad_request("that cell is already revealed"));
+        }
+    }
+
+    let analysis = analyze_revealed_puzzle_3d(puzzle).map_err(|error| {
+        AppError::internal(format!("failed to analyze revealed 3d clues: {error:?}"))
+    })?;
+
+    if !analysis.has_solution {
+        return Err(AppError::conflict("The revealed clues are inconsistent."));
+    }
+
+    let cell_name = puzzle.cells[layer][row][col].name.clone();
+    let forced = analysis.forced_answers[layer][row][col];
+
+    match (forced, guess) {
+        (ForcedAnswer::Innocent, Answer::Innocent) | (ForcedAnswer::Criminal, Answer::Criminal) => {
+        }
+        (ForcedAnswer::Innocent, Answer::Criminal) => {
+            return Err(AppError::conflict(format!(
+                "{cell_name} is already forced to be innocent.",
+            )));
+        }
+        (ForcedAnswer::Criminal, Answer::Innocent) => {
+            return Err(AppError::conflict(format!(
+                "{cell_name} is already forced to be criminal.",
+            )));
+        }
+        (ForcedAnswer::Neither, _) => {
+            return Err(AppError::conflict(format!(
+                "{cell_name} is not forced by the revealed clues yet.",
+            )));
+        }
+    }
+
+    puzzle.cells[layer][row][col].state = Visibility::Revealed;
+    Ok(())
+}
+
 impl PuzzleResponse {
     fn from_generated(seed: u64, generated: &GeneratedPuzzle) -> Self {
         Self {
@@ -487,6 +659,34 @@ impl PuzzleResponse {
             cells: cell_responses(puzzle, None),
             generated_score_series: Vec::new(),
             generated_clue_texts: Vec::new(),
+        }
+    }
+}
+
+impl Puzzle3DResponse {
+    fn from_generated(seed: u64, generated: &GeneratedPuzzle3D) -> Self {
+        Self {
+            seed: Some(format_seed(seed)),
+            depth: generated.puzzle.cells.len() as u8,
+            rows: generated
+                .puzzle
+                .cells
+                .first()
+                .map(|layer| layer.len())
+                .unwrap_or_default() as u8,
+            cols: generated
+                .puzzle
+                .cells
+                .first()
+                .and_then(|layer| layer.first())
+                .map(|row| row.len())
+                .unwrap_or_default() as u8,
+            cells: generated
+                .puzzle
+                .cells
+                .iter()
+                .map(|layer| layer.iter().map(|row| cell_responses_from_row(row, None)).collect())
+                .collect(),
         }
     }
 }
@@ -530,6 +730,34 @@ fn cell_responses(
         .collect()
 }
 
+fn cell_responses_from_row(
+    row: &[clues_core::Cell],
+    clue_score_terms: Option<&[ClueScoreTerms]>,
+) -> Vec<CellResponse> {
+    row.iter()
+        .enumerate()
+        .map(|(col_index, cell)| CellResponse {
+            name: cell.name.clone(),
+            role: cell.role.clone(),
+            emoji: cell.emoji.clone(),
+            clue: if cell.state == Visibility::Revealed {
+                Some(cell.clue.text())
+            } else {
+                None
+            },
+            is_nonsense: cell.state == Visibility::Revealed
+                && matches!(cell.clue, clues_core::Clue::Nonsense { .. }),
+            score_terms: clue_score_terms.map(|row_scores| row_scores[col_index].clone()),
+            revealed_answer: if cell.state == Visibility::Revealed {
+                Some(cell.answer)
+            } else {
+                None
+            },
+            revealed: cell.state == Visibility::Revealed,
+        })
+        .collect()
+}
+
 fn parse_board_shape(rows: Option<u8>, cols: Option<u8>) -> Result<BoardShape, AppError> {
     let rows = rows.unwrap_or(DEFAULT_ROWS);
     let cols = cols.unwrap_or(DEFAULT_COLS);
@@ -546,6 +774,29 @@ fn parse_board_shape(rows: Option<u8>, cols: Option<u8>) -> Result<BoardShape, A
     }
 
     Ok(BoardShape::new(rows, cols))
+}
+
+fn parse_board_shape_3d(
+    depth: Option<u8>,
+    rows: Option<u8>,
+    cols: Option<u8>,
+) -> Result<BoardShape, AppError> {
+    let depth = depth.unwrap_or(2);
+    let rows = rows.unwrap_or(2);
+    let cols = cols.unwrap_or(2);
+
+    if depth == 0 || rows == 0 || cols == 0 {
+        return Err(AppError::bad_request("depth, rows, and cols must be at least 1"));
+    }
+
+    let cell_count = depth as usize * rows as usize * cols as usize;
+    if cell_count > MAX_PUBLIC_CELL_COUNT {
+        return Err(AppError::bad_request(format!(
+            "depth * rows * cols must be at most {MAX_PUBLIC_CELL_COUNT}",
+        )));
+    }
+
+    Ok(BoardShape::new_3d(depth, rows, cols))
 }
 
 fn parse_seed(value: &str) -> Result<u64, AppError> {
