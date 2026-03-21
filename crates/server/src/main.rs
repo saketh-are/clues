@@ -1,16 +1,25 @@
+mod editor;
+
 use std::{fs, net::SocketAddr, path::PathBuf, sync::Arc};
 
 use axum::{
     Json, Router,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
 use clues_core::{
-    Answer, BoardShape, ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, ForcedAnswer, GeneratedPuzzle,
-    Puzzle, PuzzleValidationError, StoredPuzzle, Visibility, analyze_revealed_puzzle,
-    generate_puzzle_with_seed_and_size,
+    Answer, BoardShape, Clue, ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, ForcedAnswer,
+    GeneratedPuzzle, Puzzle, PuzzleValidationError, StoredPuzzle, Visibility,
+    analyze_revealed_puzzle, generate_puzzle_with_seed_and_size,
+};
+use editor::{
+    EditorAction, EditorBootstrapResponse, EditorDraftPuzzle, EditorError, EditorErrorKind,
+    EditorGenerateResponse, EditorStateResponse, apply_action as apply_editor_action_to_draft,
+    describe_draft as describe_editor_draft, draft_from_puzzle, editor_bootstrap, finalize_draft,
+    generate_remaining_clues as generate_editor_remaining_clues, new_random_draft,
+    suggest_clue as suggest_editor_clue,
 };
 use rand::random;
 use rocksdb::{DB, Options};
@@ -38,6 +47,7 @@ struct NewPuzzleParams {
 struct PuzzleResponse {
     seed: Option<String>,
     stored_puzzle_id: Option<String>,
+    author: Option<String>,
     rows: u8,
     cols: u8,
     cells: Vec<Vec<CellResponse>>,
@@ -49,6 +59,7 @@ struct PuzzleResponse {
 struct CellResponse {
     name: String,
     role: String,
+    emoji: Option<String>,
     clue: Option<String>,
     is_nonsense: bool,
     score_terms: Option<ClueScoreTerms>,
@@ -92,6 +103,50 @@ struct AppliedGuess {
     guess: Answer,
 }
 
+#[derive(Debug, Deserialize)]
+struct NewEditorPuzzleRequest {
+    rows: u8,
+    cols: u8,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditorApplyRequest {
+    draft: EditorDraftPuzzle,
+    action: EditorAction,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditorDescribeRequest {
+    draft: EditorDraftPuzzle,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditorShareRequest {
+    draft: EditorDraftPuzzle,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditorOpenRequest {
+    source: PuzzleSource,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditorSuggestRequest {
+    draft: EditorDraftPuzzle,
+    row: usize,
+    col: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct EditorSuggestResponse {
+    clue: Clue,
+}
+
+#[derive(Debug, Deserialize)]
+struct EditorGenerateRequest {
+    draft: EditorDraftPuzzle,
+}
+
 #[derive(Debug, Serialize)]
 struct ErrorResponse {
     error: String,
@@ -106,9 +161,21 @@ async fn main() {
     let static_dir = format!("{}/static", env!("CARGO_MANIFEST_DIR"));
     let app = Router::new()
         .route("/", get(index_html))
+        .route("/edit", get(edit_html))
         .route("/p/{stored_puzzle_id}", get(index_html))
         .route("/api/puzzles/new", get(new_puzzle))
         .route("/api/puzzles/guess", post(guess_cell))
+        .route("/api/editor/bootstrap", get(editor_bootstrap_handler))
+        .route("/api/editor/new", post(new_editor_puzzle))
+        .route("/api/editor/describe", post(describe_editor_puzzle))
+        .route("/api/editor/open", post(open_editor_puzzle))
+        .route("/api/editor/apply", post(apply_editor_action))
+        .route("/api/editor/suggest", post(suggest_editor_clue_handler))
+        .route(
+            "/api/editor/generate-remaining",
+            post(generate_remaining_editor_clues),
+        )
+        .route("/api/editor/share", post(share_editor_puzzle))
         .route("/api/stored-puzzles/generate", post(create_stored_puzzle))
         .route(
             "/api/stored-puzzles/{stored_puzzle_id}",
@@ -126,8 +193,18 @@ async fn main() {
     axum::serve(listener, app).await.expect("run server");
 }
 
-async fn index_html() -> Html<&'static str> {
-    Html(include_str!("../static/index.html"))
+async fn index_html() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(include_str!("../static/index.html")),
+    )
+}
+
+async fn edit_html() -> impl IntoResponse {
+    (
+        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(include_str!("../static/edit.html")),
+    )
 }
 
 async fn new_puzzle(
@@ -144,16 +221,78 @@ async fn create_stored_puzzle(
 ) -> Result<Json<CreateStoredPuzzleResponse>, AppError> {
     let (_, generated) =
         generate_requested_puzzle(params.seed.as_deref(), params.rows, params.cols)?;
-    let stored_puzzle = StoredPuzzle::from(&generated.puzzle);
-    let stored_puzzle_id = generate_stored_puzzle_id(&state.stored_puzzles)?;
-    let encoded = serde_json::to_vec(&stored_puzzle)
-        .map_err(|error| AppError::internal(format!("failed to encode stored puzzle: {error}")))?;
+    let stored_puzzle_id = save_puzzle_as_stored(&state.stored_puzzles, &generated.puzzle)?;
 
-    state
-        .stored_puzzles
-        .put(stored_puzzle_db_key(&stored_puzzle_id), encoded)
-        .map_err(|error| AppError::internal(format!("failed to save stored puzzle: {error}")))?;
+    Ok(Json(CreateStoredPuzzleResponse { stored_puzzle_id }))
+}
 
+async fn editor_bootstrap_handler() -> Json<EditorBootstrapResponse> {
+    Json(editor_bootstrap())
+}
+
+async fn new_editor_puzzle(
+    Json(request): Json<NewEditorPuzzleRequest>,
+) -> Result<Json<EditorStateResponse>, AppError> {
+    let board = parse_board_shape(Some(request.rows), Some(request.cols))?;
+    let draft = new_random_draft(board).map_err(map_editor_error)?;
+    Ok(Json(draft))
+}
+
+async fn describe_editor_puzzle(
+    Json(request): Json<EditorDescribeRequest>,
+) -> Result<Json<EditorStateResponse>, AppError> {
+    let response = describe_editor_draft(request.draft).map_err(map_editor_error)?;
+    Ok(Json(response))
+}
+
+async fn open_editor_puzzle(
+    State(state): State<AppState>,
+    Json(request): Json<EditorOpenRequest>,
+) -> Result<Json<EditorDraftPuzzle>, AppError> {
+    let puzzle = match request.source {
+        PuzzleSource::Generated { seed, rows, cols } => {
+            let (_, generated) =
+                generate_requested_puzzle(Some(seed.as_str()), Some(rows), Some(cols))?;
+            generated.puzzle
+        }
+        PuzzleSource::Stored { stored_puzzle_id } => {
+            load_stored_puzzle_by_id(&state, &stored_puzzle_id)?
+        }
+    };
+
+    let draft = draft_from_puzzle(&puzzle).map_err(map_editor_error)?;
+    Ok(Json(draft))
+}
+
+async fn apply_editor_action(
+    Json(request): Json<EditorApplyRequest>,
+) -> Result<Json<EditorStateResponse>, AppError> {
+    let response =
+        apply_editor_action_to_draft(request.draft, request.action).map_err(map_editor_error)?;
+    Ok(Json(response))
+}
+
+async fn suggest_editor_clue_handler(
+    Json(request): Json<EditorSuggestRequest>,
+) -> Result<Json<EditorSuggestResponse>, AppError> {
+    let clue =
+        suggest_editor_clue(request.draft, request.row, request.col).map_err(map_editor_error)?;
+    Ok(Json(EditorSuggestResponse { clue }))
+}
+
+async fn generate_remaining_editor_clues(
+    Json(request): Json<EditorGenerateRequest>,
+) -> Result<Json<EditorGenerateResponse>, AppError> {
+    let response = generate_editor_remaining_clues(request.draft).map_err(map_editor_error)?;
+    Ok(Json(response))
+}
+
+async fn share_editor_puzzle(
+    State(state): State<AppState>,
+    Json(request): Json<EditorShareRequest>,
+) -> Result<Json<CreateStoredPuzzleResponse>, AppError> {
+    let puzzle = finalize_draft(&request.draft).map_err(map_editor_error)?;
+    let stored_puzzle_id = save_puzzle_as_stored(&state.stored_puzzles, &puzzle)?;
     Ok(Json(CreateStoredPuzzleResponse { stored_puzzle_id }))
 }
 
@@ -241,12 +380,31 @@ fn load_stored_puzzle_by_id(state: &AppState, stored_puzzle_id: &str) -> Result<
     Ok(puzzle)
 }
 
+fn save_puzzle_as_stored(db: &DB, puzzle: &Puzzle) -> Result<String, AppError> {
+    let stored_puzzle = StoredPuzzle::from(puzzle);
+    let stored_puzzle_id = generate_stored_puzzle_id(db)?;
+    let encoded = serde_json::to_vec(&stored_puzzle)
+        .map_err(|error| AppError::internal(format!("failed to encode stored puzzle: {error}")))?;
+
+    db.put(stored_puzzle_db_key(&stored_puzzle_id), encoded)
+        .map_err(|error| AppError::internal(format!("failed to save stored puzzle: {error}")))?;
+
+    Ok(stored_puzzle_id)
+}
+
 fn map_stored_puzzle_validation_error(error: PuzzleValidationError) -> AppError {
     match error {
         PuzzleValidationError::DuplicateName(name) => {
             AppError::internal(format!("stored puzzle has duplicate name: {name}"))
         }
         other => AppError::internal(format!("stored puzzle is invalid: {other:?}")),
+    }
+}
+
+fn map_editor_error(error: EditorError) -> AppError {
+    match error.kind {
+        EditorErrorKind::BadRequest => AppError::bad_request(error.message),
+        EditorErrorKind::Conflict => AppError::conflict(error.message),
     }
 }
 
@@ -318,6 +476,7 @@ impl PuzzleResponse {
         Self {
             seed: Some(format_seed(seed)),
             stored_puzzle_id: None,
+            author: None,
             rows: generated.puzzle.cells.len() as u8,
             cols: generated
                 .puzzle
@@ -335,6 +494,7 @@ impl PuzzleResponse {
         Self {
             seed: None,
             stored_puzzle_id: Some(stored_puzzle_id.to_string()),
+            author: puzzle.author.clone(),
             rows: puzzle.cells.len() as u8,
             cols: puzzle
                 .cells
@@ -362,6 +522,7 @@ fn cell_responses(
                 .map(|(col_index, cell)| CellResponse {
                     name: cell.name.clone(),
                     role: cell.role.clone(),
+                    emoji: cell.emoji.clone(),
                     clue: if cell.state == Visibility::Revealed {
                         Some(cell.clue.text())
                     } else {

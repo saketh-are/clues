@@ -364,6 +364,11 @@ impl CompileContext {
     fn compile_clue(&self, clue: &Clue) -> Result<CompiledClue, SolveError> {
         match clue {
             Clue::Nonsense { .. } => Ok(CompiledClue::Nonsense),
+            Clue::Declaration { name, answer } => Ok(CompiledClue::Count {
+                mask: self.position_to_bit(self.name_position(name)?),
+                answer: *answer,
+                count: Count::Number(1),
+            }),
             Clue::CountCells {
                 selector,
                 answer,
@@ -838,6 +843,7 @@ mod tests {
                         Cell {
                             name: NAMES[index].to_string(),
                             role: roles[col].to_string(),
+                            emoji: None,
                             clue: dummy_clue.clone(),
                             answer: Answer::Innocent,
                             state: Visibility::Hidden,
@@ -847,7 +853,10 @@ mod tests {
             })
             .collect();
 
-        Puzzle { cells }
+        Puzzle {
+            author: None,
+            cells,
+        }
     }
 
     fn small_test_puzzle() -> Puzzle {
@@ -866,6 +875,7 @@ mod tests {
                         Cell {
                             name: NAMES[index].to_string(),
                             role: "Role".to_string(),
+                            emoji: None,
                             clue: dummy_clue.clone(),
                             answer: Answer::Innocent,
                             state: Visibility::Hidden,
@@ -875,7 +885,10 @@ mod tests {
             })
             .collect();
 
-        Puzzle { cells }
+        Puzzle {
+            author: None,
+            cells,
+        }
     }
 
     fn forced_at(analysis: &ClueAnalysis, row: usize, col: usize) -> ForcedAnswer {
@@ -1341,6 +1354,22 @@ mod tests {
                 .flatten()
                 .all(|forced| *forced == ForcedAnswer::Neither)
         );
+    }
+
+    #[test]
+    fn declaration_clue_forces_named_answer() {
+        let puzzle = test_puzzle();
+        let declared_name = puzzle.cells[0][0].name.clone();
+        let clues = [Clue::Declaration {
+            name: declared_name,
+            answer: Answer::Innocent,
+        }];
+
+        let analysis = analyze_clues(&puzzle, &clues).unwrap();
+
+        assert!(analysis.has_solution);
+        assert_eq!(forced_at(&analysis, 0, 0), ForcedAnswer::Innocent);
+        assert_eq!(forced_at(&analysis, 0, 1), ForcedAnswer::Neither);
     }
 
     #[test]

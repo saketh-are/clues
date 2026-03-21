@@ -4,16 +4,20 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clues</title>
-    <link rel="stylesheet" href="/styles.css?v=20260320u" />
+    <link rel="stylesheet" href="/styles.css?v=20260320ab" />
   </head>
   <body>
     <main class="page">
       <section class="topbar">
         <div class="brand">
-          <h1>Clues</h1>
+          <h1 id="puzzle-title">Clues</h1>
         </div>
 
         <div class="controls">
+          <button id="open-editor" class="button button-secondary" type="button" disabled>
+            Open in Editor
+          </button>
+
           <button id="clear-board" class="button button-secondary" type="button">
             Clear
           </button>
@@ -95,6 +99,63 @@
       </div>
     </div>
 
+    <div id="new-puzzle-modal" class="modal" hidden>
+      <div id="new-puzzle-backdrop" class="modal-backdrop"></div>
+      <div class="modal-card new-puzzle-modal-card" role="dialog" aria-modal="true" aria-labelledby="new-puzzle-title">
+        <h2 id="new-puzzle-title" class="modal-title modal-title-error">New Puzzle</h2>
+        <div class="new-puzzle-pickers">
+          <label class="new-puzzle-picker">
+            <span class="new-puzzle-label">Rows</span>
+            <div class="new-puzzle-stepper">
+              <button id="new-puzzle-rows-up" class="button button-secondary new-puzzle-step" type="button">
+                ↑
+              </button>
+              <div
+                id="new-puzzle-rows-value"
+                class="new-puzzle-value"
+                role="spinbutton"
+                tabindex="0"
+                aria-label="Rows"
+                aria-valuemin="1"
+                aria-valuemax="20"
+              ></div>
+              <button id="new-puzzle-rows-down" class="button button-secondary new-puzzle-step" type="button">
+                ↓
+              </button>
+            </div>
+          </label>
+          <label class="new-puzzle-picker">
+            <span class="new-puzzle-label">Cols</span>
+            <div class="new-puzzle-stepper">
+              <button id="new-puzzle-cols-up" class="button button-secondary new-puzzle-step" type="button">
+                ↑
+              </button>
+              <div
+                id="new-puzzle-cols-value"
+                class="new-puzzle-value"
+                role="spinbutton"
+                tabindex="0"
+                aria-label="Cols"
+                aria-valuemin="1"
+                aria-valuemax="20"
+              ></div>
+              <button id="new-puzzle-cols-down" class="button button-secondary new-puzzle-step" type="button">
+                ↓
+              </button>
+            </div>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button id="new-puzzle-cancel" class="button button-secondary" type="button">
+            Cancel
+          </button>
+          <button id="new-puzzle-confirm" class="button button-good" type="button">
+            Start
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="finish-modal" class="modal" hidden>
       <div id="finish-backdrop" class="modal-backdrop"></div>
       <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="finish-title">
@@ -139,6 +200,6 @@
       </article>
     </template>
 
-    <script src="/app.js?v=20260320b" defer></script>
+    <script src="/app.js?v=20260320h" defer></script>
   </body>
 </html>

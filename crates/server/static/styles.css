@@ -366,8 +366,10 @@ h1 {
 .button-recommended {
   background: rgba(241, 194, 50, 0.22);
   color: #7a6112;
-  border-color: rgba(241, 194, 50, 0.38);
-  box-shadow: 0 0 0 1px rgba(241, 194, 50, 0.08);
+  border: 1px solid rgba(241, 194, 50, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 248, 212, 0.62),
+    0 0 0 1px rgba(241, 194, 50, 0.1);
 }
 
 .board-shell {
@@ -773,6 +775,70 @@ h1 {
   width: 100%;
 }
 
+.new-puzzle-modal-card {
+  width: min(92vw, 22rem);
+}
+
+.new-puzzle-pickers {
+  display: flex;
+  justify-content: center;
+  align-items: start;
+  gap: 0.58rem;
+}
+
+.new-puzzle-picker {
+  display: grid;
+  gap: 0.28rem;
+  justify-items: center;
+}
+
+.new-puzzle-label {
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: 0.96rem;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.new-puzzle-stepper {
+  display: grid;
+  width: min(100%, 4.5rem);
+  justify-items: center;
+  gap: 0.24rem;
+}
+
+.new-puzzle-step {
+  width: 100%;
+  min-height: 1.9rem;
+  padding: 0.18rem 0.42rem;
+  font-size: 0.92rem;
+  line-height: 1;
+}
+
+.new-puzzle-step:disabled {
+  opacity: 0.38;
+  cursor: default;
+}
+
+.new-puzzle-value {
+  width: 100%;
+  min-height: 3.7rem;
+  display: grid;
+  place-items: center;
+  padding: 0.16rem;
+  border: 1px solid rgba(31, 36, 48, 0.12);
+  border-radius: 0.9rem;
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: 2.1rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  user-select: none;
+  touch-action: none;
+  cursor: ns-resize;
+}
+
 .start-modal-card {
   place-items: center;
   padding: 1rem;
@@ -796,21 +862,49 @@ h1 {
   .topbar {
     padding: 0.18rem 0.28rem;
     gap: 0.16rem;
+    align-items: flex-start;
+    flex-wrap: wrap;
   }
 
   h1 {
     font-size: 0.92rem;
   }
 
+  .brand {
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+
   .controls {
     gap: 0.1rem;
     font-size: 0.7rem;
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
   }
 
   .button {
     min-height: 1.34rem;
     padding: 0.14rem 0.34rem;
     font-size: 0.68rem;
+  }
+
+  .new-puzzle-pickers {
+    gap: 0.46rem;
+  }
+
+  .new-puzzle-label {
+    font-size: 0.86rem;
+  }
+
+  .new-puzzle-step {
+    min-height: 1.7rem;
+    font-size: 0.84rem;
+  }
+
+  .new-puzzle-value {
+    min-height: 3.25rem;
+    font-size: 1.78rem;
   }
 
   .board {

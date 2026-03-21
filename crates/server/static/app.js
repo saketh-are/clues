@@ -1,5 +1,7 @@
 const boardEl = document.querySelector("#board");
 const template = document.querySelector("#cell-template");
+const puzzleTitleEl = document.querySelector("#puzzle-title");
+const openEditorButton = document.querySelector("#open-editor");
 const newRandomButton = document.querySelector("#new-random");
 const shareButton = document.querySelector("#share-puzzle");
 document.querySelector("#share-results")?.remove();
@@ -24,6 +26,16 @@ const confirmTitleEl = document.querySelector("#confirm-title");
 const confirmMessageEl = document.querySelector("#confirm-message");
 const confirmAcceptButton = document.querySelector("#confirm-accept");
 const confirmCancelButton = document.querySelector("#confirm-cancel");
+const newPuzzleModalEl = document.querySelector("#new-puzzle-modal");
+const newPuzzleBackdropEl = document.querySelector("#new-puzzle-backdrop");
+const newPuzzleRowsUpButton = document.querySelector("#new-puzzle-rows-up");
+const newPuzzleRowsValueEl = document.querySelector("#new-puzzle-rows-value");
+const newPuzzleRowsDownButton = document.querySelector("#new-puzzle-rows-down");
+const newPuzzleColsUpButton = document.querySelector("#new-puzzle-cols-up");
+const newPuzzleColsValueEl = document.querySelector("#new-puzzle-cols-value");
+const newPuzzleColsDownButton = document.querySelector("#new-puzzle-cols-down");
+const newPuzzleCancelButton = document.querySelector("#new-puzzle-cancel");
+const newPuzzleConfirmButton = document.querySelector("#new-puzzle-confirm");
 const finishModalEl = document.querySelector("#finish-modal");
 const finishBackdropEl = document.querySelector("#finish-backdrop");
 const finishMessageEl = document.querySelector("#finish-message");
@@ -36,6 +48,9 @@ const cornerNoteMenuCardEl = document.querySelector("#corner-note-menu-card");
 const cornerNoteOptionEls = [...document.querySelectorAll("#corner-note-menu [data-color]")];
 const progressStoragePrefix = "clues-progress:v1:";
 const sharedLinkStoragePrefix = "clues-shared-link:v2:";
+const editorStorageKey = "clues-editor:v1";
+const maxPublicCellCount = 20;
+const maxBoardDimension = 20;
 const noteTapDelayMs = 420;
 const cornerNotePressDelayMs = 420;
 const suppressedNoteClickDelayMs = 260;
@@ -74,6 +89,9 @@ function emojiForRole(role) {
 }
 
 function emojiForCell(cell) {
+  if (typeof cell.emoji === "string" && cell.emoji.trim() !== "") {
+    return cell.emoji;
+  }
   return specialNameEmojis[cell.name] ?? emojiForRole(cell.role);
 }
 
@@ -114,7 +132,17 @@ const state = {
   initialRevealed: null,
   cornerNoteMenu: null,
   activeCornerNoteColor: null,
+  currentAuthor: null,
+  pendingNewBoardSize: null,
+  newPuzzleDrag: null,
 };
+
+function renderPuzzleTitle(author) {
+  const normalized = typeof author === "string" ? author.trim() : "";
+  const title = normalized === "" ? "Clues" : `Clues by ${normalized}`;
+  puzzleTitleEl.textContent = title;
+  document.title = title;
+}
 
 function normalizeSeed(value) {
   if (value === undefined || value === null || value === "") {
@@ -164,6 +192,11 @@ function normalizeDimension(value, fallback) {
   return normalized;
 }
 
+function clampBoardDimension(value, fallback) {
+  const normalized = normalizeDimension(value, fallback);
+  return Math.min(maxBoardDimension, Math.max(1, normalized));
+}
+
 function boardSizeFromUrl() {
   const url = new URL(window.location.href);
   return {
@@ -174,6 +207,95 @@ function boardSizeFromUrl() {
 
 function currentBoardSize() {
   return state.boardSize ?? boardSizeFromUrl();
+}
+
+function validColsForRows(rows) {
+  return Math.max(1, Math.floor(maxPublicCellCount / rows));
+}
+
+function currentNewPuzzleBoardSize() {
+  const fallback = currentBoardSize();
+  const rows = clampBoardDimension(state.pendingNewBoardSize?.rows, fallback.rows);
+  const cols = Math.min(
+    validColsForRows(rows),
+    clampBoardDimension(state.pendingNewBoardSize?.cols, fallback.cols),
+  );
+  return { rows, cols };
+}
+
+function stepNewPuzzleDimension(dimension, delta) {
+  const size = currentNewPuzzleBoardSize();
+  if (dimension === "rows") {
+    const rows = clampBoardDimension(size.rows + delta, size.rows);
+    state.pendingNewBoardSize = {
+      rows,
+      cols: Math.min(size.cols, validColsForRows(rows)),
+    };
+  } else {
+    state.pendingNewBoardSize = {
+      ...size,
+      cols: Math.min(validColsForRows(size.rows), clampBoardDimension(size.cols + delta, size.cols)),
+    };
+  }
+  populateNewPuzzleSelectors();
+}
+
+function setNewPuzzleSpinValue(element, value, max) {
+  element.textContent = String(value);
+  element.setAttribute("aria-valuenow", String(value));
+  element.setAttribute("aria-valuemax", String(max));
+}
+
+function populateNewPuzzleSelectors() {
+  const { rows, cols } = currentNewPuzzleBoardSize();
+  state.pendingNewBoardSize = { rows, cols };
+
+  const maxCols = validColsForRows(rows);
+  setNewPuzzleSpinValue(newPuzzleRowsValueEl, rows, maxBoardDimension);
+  setNewPuzzleSpinValue(newPuzzleColsValueEl, cols, maxCols);
+  newPuzzleRowsUpButton.disabled = rows >= maxBoardDimension;
+  newPuzzleRowsDownButton.disabled = rows <= 1;
+  newPuzzleColsUpButton.disabled = cols >= maxCols;
+  newPuzzleColsDownButton.disabled = cols <= 1;
+}
+
+function beginNewPuzzleDrag(dimension, event) {
+  state.newPuzzleDrag = {
+    dimension,
+    pointerId: event.pointerId,
+    lastClientY: event.clientY,
+    carriedDeltaY: 0,
+  };
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+}
+
+function updateNewPuzzleDrag(event) {
+  if (!state.newPuzzleDrag || state.newPuzzleDrag.pointerId !== event.pointerId) {
+    return;
+  }
+
+  const threshold = 20;
+  state.newPuzzleDrag.carriedDeltaY += event.clientY - state.newPuzzleDrag.lastClientY;
+  state.newPuzzleDrag.lastClientY = event.clientY;
+
+  while (state.newPuzzleDrag.carriedDeltaY <= -threshold) {
+    stepNewPuzzleDimension(state.newPuzzleDrag.dimension, 1);
+    state.newPuzzleDrag.carriedDeltaY += threshold;
+  }
+
+  while (state.newPuzzleDrag.carriedDeltaY >= threshold) {
+    stepNewPuzzleDimension(state.newPuzzleDrag.dimension, -1);
+    state.newPuzzleDrag.carriedDeltaY -= threshold;
+  }
+}
+
+function endNewPuzzleDrag(event) {
+  if (!state.newPuzzleDrag || state.newPuzzleDrag.pointerId !== event.pointerId) {
+    return;
+  }
+
+  state.newPuzzleDrag = null;
+  event.currentTarget.releasePointerCapture?.(event.pointerId);
 }
 
 function updateUrlPuzzleParams(seed, boardSize) {
@@ -209,6 +331,13 @@ function currentPuzzleSource() {
     return {
       kind: "stored",
       stored_puzzle_id: state.currentStoredPuzzleId,
+    };
+  }
+
+  if (state.sharedStoredPuzzleId !== null) {
+    return {
+      kind: "stored",
+      stored_puzzle_id: state.sharedStoredPuzzleId,
     };
   }
 
@@ -582,6 +711,7 @@ function startPuzzle() {
 function openConfirmModal(action) {
   closeCornerNoteMenu();
   closeGuessModal();
+  closeNewPuzzleModal();
   closeErrorModal();
   closeFinishModal();
   state.pendingConfirmAction = action;
@@ -609,6 +739,23 @@ function closeConfirmModal() {
   confirmModalEl.hidden = true;
 }
 
+function openNewPuzzleModal() {
+  closeCornerNoteMenu();
+  closeGuessModal();
+  closeConfirmModal();
+  closeErrorModal();
+  closeFinishModal();
+  closeStartModal();
+  state.pendingNewBoardSize = { ...currentBoardSize() };
+  populateNewPuzzleSelectors();
+  newPuzzleModalEl.hidden = false;
+}
+
+function closeNewPuzzleModal() {
+  state.newPuzzleDrag = null;
+  newPuzzleModalEl.hidden = true;
+}
+
 async function confirmPendingAction() {
   const action = state.pendingConfirmAction;
   closeConfirmModal();
@@ -619,7 +766,7 @@ async function confirmPendingAction() {
   }
 
   if (action === "new") {
-    await loadPuzzle();
+    await loadPuzzle(undefined, { boardSize: currentNewPuzzleBoardSize() });
   }
 }
 
@@ -644,6 +791,54 @@ function defaultShareButtonLabel() {
 
 function syncShareButton() {
   shareButton.textContent = defaultShareButtonLabel();
+  openEditorButton.disabled = state.boardSize === null;
+}
+
+async function fetchEditorDraftFromCurrentPuzzle() {
+  const response = await fetch("/api/editor/open", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      source: currentPuzzleSource(),
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: "Failed to open puzzle in editor" }));
+    throw new Error(error.error || "Failed to open puzzle in editor");
+  }
+
+  return response.json();
+}
+
+function persistEditorDraftForOpen(draft) {
+  const rows = Array.isArray(draft?.cells) ? draft.cells.length : 0;
+  const cols = Array.isArray(draft?.cells?.[0]) ? draft.cells[0].length : 0;
+
+  if (rows <= 0 || cols <= 0) {
+    throw new Error("The puzzle could not be prepared for the editor.");
+  }
+
+  window.localStorage.setItem(
+    editorStorageKey,
+    JSON.stringify({
+      boardSize: { rows, cols },
+      pendingBoardSize: { rows, cols },
+      draft,
+      progression: [],
+      selected: null,
+      lastSharedDraftKey: null,
+      lastSharedStoredPuzzleId: null,
+    }),
+  );
+}
+
+async function openInEditor() {
+  const draft = await fetchEditorDraftFromCurrentPuzzle();
+  persistEditorDraftForOpen(draft);
+  window.location.assign("/edit");
 }
 
 async function ensureShareableLink() {
@@ -729,6 +924,10 @@ async function loadPuzzle(seed, options = {}) {
   const puzzle = await response.json();
   state.currentSeed = normalizeSeed(puzzle.seed);
   state.currentStoredPuzzleId = normalizeStoredPuzzleId(puzzle.stored_puzzle_id);
+  state.currentAuthor =
+    typeof puzzle.author === "string" && puzzle.author.trim() !== ""
+      ? puzzle.author.trim()
+      : null;
   state.sharedStoredPuzzleId =
     state.currentStoredPuzzleId ?? readSharedStoredPuzzleId(options.boardSize ?? currentBoardSize());
   state.boardSize = {
@@ -762,6 +961,7 @@ async function loadPuzzle(seed, options = {}) {
   state.cornerNoteMenu = null;
   state.scoreDebugTab = "generated";
   state.shareLinkPromise = null;
+  renderPuzzleTitle(state.currentAuthor);
   state.initialRevealed =
     puzzle.cells.flatMap((row, rowIndex) =>
       row.map((cell, colIndex) => ({ cell, rowIndex, colIndex })),
@@ -1483,6 +1683,11 @@ function closeTopOverlayOnEscape() {
     return true;
   }
 
+  if (!newPuzzleModalEl.hidden) {
+    closeNewPuzzleModal();
+    return true;
+  }
+
   if (!errorModalEl.hidden) {
     closeErrorModal();
     return true;
@@ -2111,16 +2316,7 @@ function showGuessError(error) {
 }
 
 newRandomButton.addEventListener("click", async () => {
-  if (canSkipNewPuzzleConfirmation()) {
-    try {
-      await loadPuzzle();
-    } catch (error) {
-      openErrorModal(error.message);
-    }
-    return;
-  }
-
-  openConfirmModal("new");
+  openNewPuzzleModal();
 });
 
 shareButton.addEventListener("click", async () => {
@@ -2139,8 +2335,68 @@ shareButton.addEventListener("click", async () => {
   }
 });
 
+openEditorButton.addEventListener("click", async () => {
+  try {
+    await openInEditor();
+  } catch (error) {
+    openErrorModal("Could not open the editor.", error.message);
+  }
+});
+
 clearButton.addEventListener("click", () => {
   openConfirmModal("clear");
+});
+newPuzzleBackdropEl.addEventListener("click", closeNewPuzzleModal);
+newPuzzleCancelButton.addEventListener("click", closeNewPuzzleModal);
+newPuzzleRowsUpButton.addEventListener("click", () => stepNewPuzzleDimension("rows", 1));
+newPuzzleRowsDownButton.addEventListener("click", () => stepNewPuzzleDimension("rows", -1));
+newPuzzleColsUpButton.addEventListener("click", () => stepNewPuzzleDimension("cols", 1));
+newPuzzleColsDownButton.addEventListener("click", () => stepNewPuzzleDimension("cols", -1));
+newPuzzleRowsValueEl.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  beginNewPuzzleDrag("rows", event);
+});
+newPuzzleRowsValueEl.addEventListener("pointermove", updateNewPuzzleDrag);
+newPuzzleRowsValueEl.addEventListener("pointerup", endNewPuzzleDrag);
+newPuzzleRowsValueEl.addEventListener("pointercancel", endNewPuzzleDrag);
+newPuzzleColsValueEl.addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  beginNewPuzzleDrag("cols", event);
+});
+newPuzzleColsValueEl.addEventListener("pointermove", updateNewPuzzleDrag);
+newPuzzleColsValueEl.addEventListener("pointerup", endNewPuzzleDrag);
+newPuzzleColsValueEl.addEventListener("pointercancel", endNewPuzzleDrag);
+newPuzzleRowsValueEl.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    stepNewPuzzleDimension("rows", 1);
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    stepNewPuzzleDimension("rows", -1);
+  }
+});
+newPuzzleColsValueEl.addEventListener("keydown", (event) => {
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    stepNewPuzzleDimension("cols", 1);
+  } else if (event.key === "ArrowDown") {
+    event.preventDefault();
+    stepNewPuzzleDimension("cols", -1);
+  }
+});
+newPuzzleConfirmButton.addEventListener("click", async () => {
+  closeNewPuzzleModal();
+
+  if (canSkipNewPuzzleConfirmation()) {
+    try {
+      await loadPuzzle(undefined, { boardSize: currentNewPuzzleBoardSize() });
+    } catch (error) {
+      openErrorModal(error.message);
+    }
+    return;
+  }
+
+  openConfirmModal("new");
 });
 guessBackdropEl.addEventListener("click", closeGuessModal);
 guessCancelButton.addEventListener("click", closeGuessModal);

@@ -1,0 +1,741 @@
+.editor-body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+.editor-page [hidden] {
+  display: none !important;
+}
+
+.editor-page {
+  max-width: 1480px;
+  height: auto;
+  min-height: 100dvh;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: visible;
+}
+
+.editor-layout,
+.editor-board-shell,
+.editor-sidebar,
+.editor-panel,
+.editor-panel-body,
+.editor-inspector,
+.editor-static-section,
+.editor-dynamic-section,
+.editor-action-panel,
+.editor-subsection {
+  min-width: 0;
+}
+
+.editor-layout {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1.08fr) minmax(22rem, 32rem);
+  gap: 0.4rem;
+}
+
+.editor-board-shell {
+  padding: clamp(0.22rem, 1.3vmin, 0.6rem);
+}
+
+.editor-sidebar {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  gap: 0.38rem;
+}
+
+.editor-panel {
+  min-height: 0;
+  height: 100%;
+  padding: 0.68rem 0.74rem;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.58rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.82rem;
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(10px);
+}
+
+.editor-panel-body {
+  min-height: 0;
+  display: grid;
+}
+
+.editor-panel-title,
+.editor-section-title,
+.editor-selected-heading,
+.editor-subsection-title {
+  margin: 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+}
+
+.editor-panel-title {
+  font-size: 0.98rem;
+  line-height: 1;
+}
+
+.editor-section-title {
+  font-size: 0.94rem;
+  line-height: 0.98;
+}
+
+.editor-selected-heading {
+  font-size: 1.22rem;
+  line-height: 0.94;
+}
+
+.editor-subsection-title {
+  font-size: 0.8rem;
+  line-height: 1;
+}
+
+.editor-prompt,
+.editor-share-link,
+.editor-empty-state,
+.editor-selected-meta,
+.editor-action-copy,
+.editor-subsection-body,
+.editor-share-link a {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.35;
+}
+
+.editor-share-link a {
+  color: var(--accent);
+  word-break: break-word;
+}
+
+.editor-controls {
+  gap: 0.2rem;
+}
+
+.editor-prompt-bar {
+  min-height: 2.4rem;
+  max-height: 2.4rem;
+  padding: 0.48rem 0.72rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.64rem;
+  background: rgba(218, 239, 224, 0.92);
+  border: 1px solid rgba(74, 138, 97, 0.16);
+  border-radius: 0.82rem;
+  box-shadow: 0 10px 24px rgba(74, 138, 97, 0.08);
+}
+
+.editor-prompt {
+  color: #2f6844;
+  font-size: 0.88rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.editor-size-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.34rem;
+  white-space: nowrap;
+}
+
+.editor-author-control {
+  flex: 0 0 12rem;
+  width: 12rem;
+  max-width: 12rem;
+}
+
+.editor-size-label {
+  color: var(--muted);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.editor-controls .editor-select {
+  width: auto;
+  min-width: 3.2rem;
+  min-height: 1.6rem;
+  padding-block: 0.16rem;
+}
+
+.editor-controls .editor-author-input {
+  min-width: 0;
+}
+
+.editor-select,
+.editor-input,
+.editor-textarea {
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+  background: rgba(255, 255, 255, 0.86);
+  border: 1px solid rgba(31, 36, 48, 0.12);
+  border-radius: 0.6rem;
+}
+
+.editor-select,
+.editor-input {
+  min-height: 1.8rem;
+  padding: 0.24rem 0.5rem;
+}
+
+.editor-textarea {
+  min-height: 4.4rem;
+  padding: 0.34rem 0.5rem;
+  resize: vertical;
+}
+
+.editor-field {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.editor-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.36rem;
+  align-items: end;
+}
+
+.editor-action-panel {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.52rem;
+  background: rgba(255, 255, 255, 0.56);
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 0.72rem;
+}
+
+.editor-dual-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.editor-kind-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.24rem;
+}
+
+.editor-kind-button {
+  min-height: 1.66rem;
+  padding-inline: 0.38rem;
+  font-size: 0.72rem;
+  touch-action: manipulation;
+}
+
+.editor-section-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.36rem;
+  align-items: start;
+}
+
+.editor-section-head > :first-child {
+  min-width: 0;
+}
+
+.editor-section-head .button {
+  align-self: start;
+}
+
+.editor-suggest-button {
+  font-weight: 600;
+}
+
+.editor-action-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.38rem;
+}
+
+.editor-clue-fields,
+.editor-subsection-body {
+  display: grid;
+  gap: 0.38rem;
+}
+
+.editor-clue-divider {
+  border-top: 1px solid rgba(31, 36, 48, 0.08);
+  margin-top: 0.04rem;
+  padding-top: 0.02rem;
+}
+
+.editor-clue-preview {
+  min-height: 1.2rem;
+  color: var(--ink);
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: clamp(0.92rem, 1.36vw, 1.22rem);
+  font-weight: 700;
+  line-height: 1.08;
+  white-space: pre-wrap;
+}
+
+.editor-subsection {
+  display: grid;
+  gap: 0.22rem;
+  padding-top: 0.04rem;
+  border-top: 1px solid rgba(31, 36, 48, 0.08);
+}
+
+.editor-subgrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.3rem;
+}
+
+.editor-tile-summary {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.56rem;
+}
+
+.editor-tile-summary-main {
+  display: grid;
+  gap: 0.12rem;
+  min-width: 0;
+}
+
+.editor-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.editor-inline-details {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.34rem;
+}
+
+.editor-selected-emoji {
+  flex: 0 0 auto;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+.editor-emoji-button {
+  width: 2.1rem;
+  height: 2.1rem;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 0.5rem;
+  background: rgba(255, 255, 255, 0.9);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+}
+
+.editor-emoji-button:disabled {
+  cursor: default;
+  opacity: 0.72;
+}
+
+.editor-icon-button {
+  width: 1.7rem;
+  height: 1.7rem;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.editor-icon-button:focus-visible {
+  outline: 2px solid rgba(207, 95, 63, 0.34);
+  outline-offset: 2px;
+}
+
+.editor-inline-input {
+  min-width: 0;
+  color: var(--ink);
+}
+
+.editor-inline-input.is-invalid {
+  color: #b43c2f;
+}
+
+.editor-inline-name {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 0.14rem 0.34rem;
+  border: 1px solid rgba(31, 36, 48, 0.08);
+  border-radius: 0.35rem;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: 1.22rem;
+  line-height: 0.94;
+}
+
+.editor-inline-role-input {
+  flex: 0 1 8.4rem;
+  min-height: 1.9rem;
+  padding: 0.22rem 0.5rem;
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: 0.84rem;
+  line-height: 1.1;
+}
+
+.editor-inline-name.is-invalid {
+  background: rgba(180, 60, 47, 0.06);
+}
+
+.editor-inline-role-input.is-invalid {
+  border-color: rgba(180, 60, 47, 0.42);
+  background: rgba(180, 60, 47, 0.06);
+}
+
+.editor-emoji-modal-card {
+  width: min(92vw, 24rem);
+}
+
+.editor-custom-role-modal-card {
+  width: min(92vw, 22rem);
+}
+
+.editor-custom-role-copy {
+  margin-top: -0.1rem;
+}
+
+.editor-custom-role-input {
+  min-height: 2.2rem;
+  font-size: 1rem;
+}
+
+.editor-custom-role-input.is-invalid {
+  border-color: rgba(180, 60, 47, 0.42);
+  background: rgba(180, 60, 47, 0.06);
+  color: #b43c2f;
+}
+
+.editor-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 0.34rem;
+}
+
+.editor-emoji-option {
+  min-height: 2.3rem;
+  padding: 0;
+  font-size: 1.26rem;
+  line-height: 1;
+}
+
+.editor-emoji-custom-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.editor-emoji-custom-input {
+  text-align: center;
+  font-size: 1.04rem;
+}
+
+.editor-emoji-custom-input.is-invalid {
+  border-color: rgba(180, 60, 47, 0.42);
+  background: rgba(180, 60, 47, 0.06);
+  color: #b43c2f;
+}
+
+.editor-badge-stack {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.26rem;
+  max-width: 9rem;
+}
+
+.editor-status-badge {
+  padding: 0.22rem 0.48rem;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  background: rgba(31, 36, 48, 0.08);
+  color: var(--ink);
+}
+
+.editor-status-badge.is-innocent {
+  background: rgba(45, 122, 83, 0.16);
+  color: #22583d;
+}
+
+.editor-status-badge.is-criminal {
+  background: rgba(180, 60, 47, 0.16);
+  color: #8d342a;
+}
+
+.editor-status-badge.is-neutral {
+  background: rgba(31, 36, 48, 0.08);
+  color: var(--muted);
+}
+
+.editor-inspector {
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0.62rem;
+}
+
+.editor-static-section {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.editor-dynamic-section {
+  min-height: 0;
+  display: grid;
+  align-content: start;
+  gap: 0.52rem;
+  padding-top: 0.62rem;
+  border-top: 1px solid rgba(31, 36, 48, 0.12);
+  overflow: auto;
+}
+
+.editor-cell {
+  transition: transform 120ms ease, box-shadow 120ms ease, border-color 120ms ease;
+}
+
+.editor-cell.is-selected {
+  border-color: rgba(207, 95, 63, 0.42);
+  box-shadow:
+    var(--shadow),
+    0 0 0 2px rgba(207, 95, 63, 0.16);
+  transform: translateY(-1px);
+}
+
+.editor-cell.is-target {
+  border-color: rgba(45, 122, 83, 0.3);
+}
+
+.editor-cell.is-forced-answer {
+  box-shadow:
+    var(--shadow),
+    inset 0 0 0 1px rgba(31, 36, 48, 0.08);
+}
+
+.editor-cell.needs-clue {
+  background-blend-mode: multiply;
+}
+
+.editor-cell.needs-clue.tile-innocent {
+  background-color: rgba(45, 122, 83, 0.1);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(45, 122, 83, 0.2) 0 0.42rem,
+    rgba(255, 255, 255, 0.22) 0.42rem 0.84rem
+  );
+}
+
+.editor-cell.needs-clue.tile-criminal {
+  background-color: rgba(180, 60, 47, 0.1);
+  background-image: repeating-linear-gradient(
+    -45deg,
+    rgba(180, 60, 47, 0.2) 0 0.42rem,
+    rgba(255, 255, 255, 0.22) 0.42rem 0.84rem
+  );
+}
+
+.editor-cell.is-initial-reveal .cell-position {
+  color: var(--accent);
+}
+
+.editor-clue-button {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.editor-cell .cell-name {
+  font-family: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", serif;
+  font-size: clamp(0.98rem, 2.05vw, 1.56rem);
+  line-height: 0.92;
+}
+
+.editor-cell .cell-role {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: clamp(0.78rem, 1.16vw, 1.03rem);
+  line-height: 1.2;
+}
+
+.editor-clue-button.cell-clue {
+  font-family: "Avenir Next", "Segoe UI", sans-serif;
+  font-size: clamp(0.92rem, 1.36vw, 1.22rem);
+  line-height: 1.08;
+}
+
+.editor-clue-button:focus-visible {
+  outline: 2px solid rgba(207, 95, 63, 0.34);
+  outline-offset: 2px;
+  border-radius: 0.35rem;
+}
+
+.editor-clue-button {
+  width: 100%;
+  cursor: pointer;
+}
+
+.editor-clue-button.placeholder {
+  color: var(--muted);
+}
+
+@media (max-width: 980px) {
+  .editor-page {
+    align-content: start;
+  }
+
+  .editor-layout {
+    grid-template-columns: 1fr;
+    height: auto;
+    align-content: start;
+    gap: 0.72rem;
+  }
+
+  .editor-sidebar {
+    height: auto;
+    grid-template-columns: 1fr;
+  }
+
+  .editor-panel,
+  .editor-inspector {
+    height: auto;
+  }
+
+  .editor-dynamic-section {
+    overflow: visible;
+  }
+
+  .editor-board-shell .board {
+    align-self: start;
+  }
+}
+
+@media (max-width: 720px) {
+  .editor-page {
+    max-width: none;
+    row-gap: 0.14rem;
+  }
+
+  .editor-controls {
+    width: 100%;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .editor-author-control {
+    flex-basis: 100%;
+  }
+
+  .editor-prompt-bar {
+    min-height: 2.2rem;
+    max-height: 2.2rem;
+    padding: 0.42rem 0.52rem;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 0.26rem;
+  }
+
+  .editor-share-link {
+    min-width: 0;
+  }
+
+  .editor-board-shell {
+    padding-top: 0;
+    padding-inline: 0;
+  }
+
+  .editor-panel {
+    padding: 0.72rem;
+    gap: 0.62rem;
+  }
+
+  .editor-form-row,
+  .editor-dual-actions,
+  .editor-subgrid {
+    grid-template-columns: 1fr;
+  }
+
+  .editor-section-head {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .editor-inline-details {
+    gap: 0.28rem;
+  }
+
+  .editor-emoji-grid {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .editor-inline-role-input {
+    flex-basis: 7rem;
+  }
+
+  .editor-tile-summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .editor-badge-stack {
+    max-width: none;
+    justify-content: flex-start;
+  }
+
+  .editor-selected-heading {
+    font-size: 1.12rem;
+  }
+
+  .editor-prompt,
+  .editor-share-link,
+  .editor-empty-state,
+  .editor-selected-meta,
+  .editor-action-copy {
+    font-size: 0.78rem;
+  }
+
+  .editor-prompt,
+  .editor-share-link {
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .editor-kind-button {
+    font-size: 0.68rem;
+  }
+
+  .editor-clue-preview {
+    font-size: clamp(0.84rem, 3.6vw, 1rem);
+  }
+}
+
+@media (max-width: 980px) {
+  .editor-page {
+    grid-template-rows: auto auto auto;
+  }
+}

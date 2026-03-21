@@ -18,6 +18,8 @@ pub enum Visibility {
 pub struct Cell {
     pub name: Name,
     pub role: Role,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
     pub clue: Clue,
     pub answer: Answer,
     pub state: Visibility,
@@ -25,6 +27,8 @@ pub struct Cell {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Puzzle {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
     pub cells: Vec<Vec<Cell>>,
 }
 

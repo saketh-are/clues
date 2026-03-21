@@ -607,6 +607,10 @@ pub enum Clue {
     Nonsense {
         text: String,
     },
+    Declaration {
+        name: Name,
+        answer: Answer,
+    },
     CountCells {
         selector: CellSelector,
         answer: Answer,
@@ -657,6 +661,7 @@ impl Clue {
     pub fn text(&self) -> String {
         match self {
             Self::Nonsense { text } => text.clone(),
+            Self::Declaration { name, answer } => format!("{name} is {answer}"),
             Self::CountCells {
                 selector,
                 answer,
@@ -760,6 +765,7 @@ impl Clue {
     pub const fn neighbor_offsets(&self) -> &'static [Offset] {
         match self {
             Self::Nonsense { .. } => &[],
+            Self::Declaration { .. } => &[],
             Self::CountCells { selector, .. } | Self::NamedCountCells { selector, .. } => {
                 selector.neighbor_offsets()
             }
@@ -775,6 +781,7 @@ impl Clue {
     pub const fn direction_offset(&self) -> Option<Offset> {
         match self {
             Self::Nonsense { .. } => None,
+            Self::Declaration { .. } => None,
             Self::CountCells { selector, .. } | Self::NamedCountCells { selector, .. } => {
                 selector.direction_offset()
             }
@@ -794,6 +801,7 @@ impl Clue {
             | Self::RoleCount { .. }
             | Self::RolesComparison { .. }
             | Self::LineComparison { .. } => {}
+            Self::Declaration { name, .. } => rename_name(name, from, to),
             Self::CountCells { selector, .. } => selector.rename_name_references(from, to),
             Self::NamedCountCells { name, selector, .. } => {
                 rename_name(name, from, to);
@@ -845,6 +853,16 @@ mod tests {
         };
 
         assert_eq!(clue.text(), NONSENSE_TEXTS[0]);
+    }
+
+    #[test]
+    fn declaration_renders_puzzle_text() {
+        let clue = Clue::Declaration {
+            name: "Ada".to_string(),
+            answer: Answer::Innocent,
+        };
+
+        assert_eq!(clue.text(), "Ada is innocent");
     }
 
     #[test]

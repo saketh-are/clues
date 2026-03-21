@@ -13,6 +13,7 @@ pub use clue::{
 pub use generator::{
     ClueScoreTerms, DEFAULT_COLS, DEFAULT_ROWS, GenerateError, GeneratedPuzzle, MAX_CELL_COUNT,
     generate_puzzle, generate_puzzle_with_seed, generate_puzzle_with_seed_and_size,
+    suggest_clue_for_known_tile,
 };
 pub use geometry::{BoardShape, Offset, Position, TOUCHING_NEIGHBOR_OFFSETS};
 pub use puzzle::{Cell, Puzzle, PuzzleValidationError, RenamePuzzleCellError, Visibility};

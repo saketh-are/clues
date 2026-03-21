@@ -34,10 +34,12 @@ mod tests {
     #[test]
     fn stored_puzzle_serializes_with_explicit_version() {
         let puzzle = StoredPuzzle::V1(Puzzle {
+            author: None,
             cells: vec![vec![
                 Cell {
                     name: "Ada".to_string(),
                     role: "Detective".to_string(),
+                    emoji: None,
                     clue: Clue::CountCells {
                         selector: CellSelector::Neighbor {
                             name: "Ben".to_string(),
@@ -52,6 +54,7 @@ mod tests {
                 Cell {
                     name: "Ben".to_string(),
                     role: "Baker".to_string(),
+                    emoji: None,
                     clue: Clue::DirectRelation {
                         name: "Ada".to_string(),
                         answer: Answer::Criminal,
@@ -163,10 +166,12 @@ mod tests {
     #[test]
     fn stored_puzzle_round_trips_runtime_puzzle() {
         let puzzle = Puzzle {
+            author: None,
             cells: vec![vec![
                 Cell {
                     name: "Ada".to_string(),
                     role: "Detective".to_string(),
+                    emoji: None,
                     clue: Clue::CountCells {
                         selector: CellSelector::Neighbor {
                             name: "Ben".to_string(),
@@ -181,6 +186,7 @@ mod tests {
                 Cell {
                     name: "Ben".to_string(),
                     role: "Baker".to_string(),
+                    emoji: None,
                     clue: Clue::Nonsense {
                         text: "Hmm".to_string(),
                     },
@@ -198,10 +204,12 @@ mod tests {
     #[test]
     fn rename_cell_updates_names_and_clue_references() {
         let mut puzzle = Puzzle {
+            author: None,
             cells: vec![vec![
                 Cell {
                     name: "Ada".to_string(),
                     role: "Detective".to_string(),
+                    emoji: None,
                     clue: Clue::DirectRelation {
                         name: "Ben".to_string(),
                         answer: Answer::Innocent,
@@ -213,6 +221,7 @@ mod tests {
                 Cell {
                     name: "Ben".to_string(),
                     role: "Baker".to_string(),
+                    emoji: None,
                     clue: Clue::NamedCountCells {
                         name: "Ben".to_string(),
                         selector: CellSelector::Neighbor {
@@ -256,10 +265,12 @@ mod tests {
     #[test]
     fn rename_cell_rejects_duplicate_target_name() {
         let mut puzzle = Puzzle {
+            author: None,
             cells: vec![vec![
                 Cell {
                     name: "Ada".to_string(),
                     role: "Detective".to_string(),
+                    emoji: None,
                     clue: Clue::Nonsense {
                         text: "x".to_string(),
                     },
@@ -269,6 +280,7 @@ mod tests {
                 Cell {
                     name: "Ben".to_string(),
                     role: "Baker".to_string(),
+                    emoji: None,
                     clue: Clue::Nonsense {
                         text: "y".to_string(),
                     },
@@ -288,10 +300,12 @@ mod tests {
     #[test]
     fn puzzle_validation_rejects_duplicate_names() {
         let puzzle = Puzzle {
+            author: None,
             cells: vec![vec![
                 Cell {
                     name: "Ada".to_string(),
                     role: "Detective".to_string(),
+                    emoji: None,
                     clue: Clue::Nonsense {
                         text: "x".to_string(),
                     },
@@ -301,6 +315,7 @@ mod tests {
                 Cell {
                     name: "Ada".to_string(),
                     role: "Baker".to_string(),
+                    emoji: None,
                     clue: Clue::Nonsense {
                         text: "y".to_string(),
                     },
@@ -321,10 +336,12 @@ mod tests {
     #[test]
     fn puzzle_validation_rejects_ragged_rows() {
         let puzzle = Puzzle {
+            author: None,
             cells: vec![
                 vec![Cell {
                     name: "Ada".to_string(),
                     role: "Detective".to_string(),
+                    emoji: None,
                     clue: Clue::Nonsense {
                         text: "x".to_string(),
                     },
@@ -335,6 +352,7 @@ mod tests {
                     Cell {
                         name: "Ben".to_string(),
                         role: "Baker".to_string(),
+                        emoji: None,
                         clue: Clue::Nonsense {
                             text: "y".to_string(),
                         },
@@ -344,6 +362,7 @@ mod tests {
                     Cell {
                         name: "Cora".to_string(),
                         role: "Guard".to_string(),
+                        emoji: None,
                         clue: Clue::Nonsense {
                             text: "z".to_string(),
                         },
