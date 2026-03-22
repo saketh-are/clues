@@ -46,6 +46,14 @@ const noteTapDelayMs = 420;
 const cornerNotePressDelayMs = 420;
 const suppressedNoteClickDelayMs = 260;
 const noteColors = ["yellow", "red", "green", "orange", "magenta", "cyan"];
+const noteStripeColors = {
+  yellow: "rgba(241, 194, 50, 0.2)",
+  red: "rgba(221, 155, 170, 0.18)",
+  green: "rgba(160, 214, 193, 0.18)",
+  orange: "rgba(232, 140, 53, 0.18)",
+  magenta: "rgba(187, 86, 174, 0.18)",
+  cyan: "rgba(74, 178, 198, 0.18)",
+};
 const invalidMoveMessage = "⚠️ Not enough evidence!";
 const textReorientationDelayMs = 180;
 const scenePerspective = 1400;
@@ -1464,6 +1472,34 @@ function faceClassForCell(cell, key) {
   return classes.join(" ");
 }
 
+function stripeColorForNote(note) {
+  return noteStripeColors[note] ?? "transparent";
+}
+
+function noteStripeMarkup(key, textTransform) {
+  const topNote = state.notes.get(key) ?? "none";
+  const bottomNote = state.bottomNotes.get(key) ?? "none";
+
+  if (topNote === "none" && bottomNote === "none") {
+    return "";
+  }
+
+  if (topNote !== "none" && bottomNote !== "none") {
+    return `
+      <div class="three-d-face-stripes three-d-face-stripes-split" style="transform: ${textTransform};">
+        <div class="three-d-face-stripe stripe-top" style="--stripe-color: ${stripeColorForNote(topNote)};"></div>
+        <div class="three-d-face-stripe stripe-bottom" style="--stripe-color: ${stripeColorForNote(bottomNote)};"></div>
+      </div>
+    `;
+  }
+
+  return `
+    <div class="three-d-face-stripes three-d-face-stripes-full" style="transform: ${textTransform};">
+      <div class="three-d-face-stripe stripe-full" style="--stripe-color: ${stripeColorForNote(bottomNote !== "none" ? bottomNote : topNote)};"></div>
+    </div>
+  `;
+}
+
 function faceDirectionsForCell(layer, row, col) {
   return ["front", "back", "left", "right", "top", "bottom"];
 }
@@ -1608,6 +1644,7 @@ function createFace(direction, layer, row, col, cell) {
         : "cell-clue";
 
   face.innerHTML = `
+    ${noteStripeMarkup(key, textTransform)}
     <div class="three-d-face-content" style="transform: ${textTransform};">
       <div class="cell-top">
         <span class="cell-position">${positionLabel(layer, row, col)}</span>
@@ -2061,6 +2098,7 @@ function updateFaceTextOrientations() {
     }
 
     const transform = faceTextTransform(direction);
+    face.querySelector(".three-d-face-stripes")?.style.setProperty("transform", transform);
     face.querySelector(".three-d-face-content")?.style.setProperty("transform", transform);
     face.querySelector(".three-d-face-corners")?.style.setProperty("transform", transform);
   });

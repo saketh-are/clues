@@ -163,7 +163,7 @@
   position: absolute;
   inset: 0;
   border: 1px solid rgba(31, 36, 48, 0.12);
-  border-radius: 0.72rem;
+  border-radius: 0.42rem;
   background: rgba(255, 251, 246, 0.95);
   box-shadow: 0 12px 24px rgba(61, 40, 18, 0.16);
   backface-visibility: hidden;
@@ -176,6 +176,43 @@
   pointer-events: none;
   -webkit-user-drag: none;
   will-change: transform;
+}
+
+.three-d-face-stripes {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  overflow: hidden;
+  pointer-events: none;
+  transform-origin: center;
+  transition: transform 260ms ease;
+  z-index: 0;
+}
+
+.three-d-face-stripe {
+  position: absolute;
+  left: 0;
+  right: 0;
+  background-image:
+    repeating-linear-gradient(
+      135deg,
+      var(--stripe-color, rgba(241, 194, 50, 0.18)) 0 8px,
+      transparent 8px 16px
+    );
+}
+
+.three-d-face-stripes-full .stripe-full {
+  inset: 0;
+}
+
+.three-d-face-stripes-split .stripe-top {
+  top: 0;
+  bottom: 50%;
+}
+
+.three-d-face-stripes-split .stripe-bottom {
+  top: 50%;
+  bottom: 0;
 }
 
 .three-d-face.is-interactive {
