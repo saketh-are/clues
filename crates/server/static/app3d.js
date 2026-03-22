@@ -30,6 +30,8 @@ const errorBackdropEl = document.querySelector("#error-backdrop");
 const errorTitleEl = document.querySelector("#error-title");
 const errorMessageEl = document.querySelector("#error-message");
 const errorDismissButton = document.querySelector("#error-dismiss");
+const startModalEl = document.querySelector("#start-modal");
+const startButton = document.querySelector("#start-button");
 const finishModalEl = document.querySelector("#finish-modal");
 const finishBackdropEl = document.querySelector("#finish-backdrop");
 const finishMessageEl = document.querySelector("#finish-message");
@@ -96,6 +98,7 @@ const state = {
   timerStartedAt: null,
   timerCompletedAt: null,
   completionAcknowledged: false,
+  timerSessionActivated: false,
   hiddenClues: new Set(),
   flashHighlights: [],
   flashTimer: null,
@@ -837,6 +840,7 @@ function resumeActiveTimerIfNeeded() {
     document.hidden ||
     state.timerCompletedAt !== null ||
     state.timerStartedAt !== null ||
+    !state.timerSessionActivated ||
     !hasStartedTimer() ||
     allTilesMarked()
   ) {
@@ -973,6 +977,45 @@ function dismissFinishModal() {
   }
 
   closeFinishModal();
+}
+
+function hasResumeProgress() {
+  return (
+    hasStartedTimer() ||
+    state.moves.length > 0 ||
+    state.hiddenClues.size > 0 ||
+    state.notes.size > 0 ||
+    state.bottomNotes.size > 0
+  );
+}
+
+function openStartModal() {
+  startButton.textContent = hasResumeProgress() ? "Resume" : "Start";
+  closeCornerNoteMenu();
+  closeGuessModal();
+  closeErrorModal();
+  closeNewPuzzleModal();
+  closeFinishModal();
+  startModalEl.hidden = false;
+}
+
+function closeStartModal() {
+  startModalEl.hidden = true;
+}
+
+function startPuzzle() {
+  state.timerSessionActivated = true;
+  if (!hasStartedTimer()) {
+    state.timerElapsedMs = 0;
+    state.timerStartedAt = Date.now();
+    state.timerCompletedAt = null;
+    state.completionAcknowledged = false;
+  } else if (state.timerStartedAt === null && state.timerCompletedAt === null) {
+    state.timerStartedAt = Date.now();
+  }
+
+  persistProgress();
+  closeStartModal();
 }
 
 function defaultShareButtonLabel() {
@@ -2376,6 +2419,7 @@ async function restoreProgress() {
     state.timerStartedAt = null;
     state.timerCompletedAt = saved.timerCompletedAt;
     state.completionAcknowledged = saved.completionAcknowledged;
+    state.timerSessionActivated = false;
     if (saved.view) {
       state.rotationX = saved.view.rotationX;
       state.rotationY = saved.view.rotationY;
@@ -2397,6 +2441,7 @@ async function restoreProgress() {
     state.timerStartedAt = null;
     state.timerCompletedAt = null;
     state.completionAcknowledged = false;
+    state.timerSessionActivated = false;
     clearSavedProgress();
     renderBoard();
     return {
@@ -2437,8 +2482,10 @@ async function loadPuzzle(seed = null, requestedBoardSize = boardSizeFromUrl(), 
   state.timerStartedAt = null;
   state.timerCompletedAt = null;
   state.completionAcknowledged = false;
+  state.timerSessionActivated = false;
   resetShareButton();
   resetFinishCopyButton();
+  closeStartModal();
   closeFinishModal();
   const restoreResult = await restoreProgress();
   syncShareButton();
@@ -2446,11 +2493,11 @@ async function loadPuzzle(seed = null, requestedBoardSize = boardSizeFromUrl(), 
     return restoreResult;
   }
 
-  if (allTilesMarked() && state.timerCompletedAt !== null && !state.completionAcknowledged) {
-    openFinishModal();
-  } else {
-    resumeActiveTimerIfNeeded();
+  if (allTilesMarked() && state.timerCompletedAt !== null) {
+    return restoreResult;
   }
+
+  openStartModal();
 
   return restoreResult;
 }
@@ -2460,6 +2507,7 @@ async function clearBoard() {
   closeGuessModal();
   closeErrorModal();
   closeNewPuzzleModal();
+  closeStartModal();
   closeFinishModal();
   clearSavedProgress();
 
@@ -2477,6 +2525,12 @@ async function clearBoard() {
 
 async function revealGuess(answer) {
   if (!state.modalCell) {
+    return;
+  }
+
+  if (!state.timerSessionActivated) {
+    closeGuessModal();
+    openStartModal();
     return;
   }
 
@@ -2505,14 +2559,6 @@ async function revealGuess(answer) {
   }
 
   const result = await response.json();
-  if (!hasStartedTimer()) {
-    state.timerElapsedMs = 0;
-    state.timerStartedAt = Date.now();
-    state.timerCompletedAt = null;
-    state.completionAcknowledged = false;
-  } else if (state.timerStartedAt === null && state.timerCompletedAt === null) {
-    state.timerStartedAt = Date.now();
-  }
   applyAcceptedGuess(layer, row, col, answer, result);
   persistProgress();
   closeGuessModal();
@@ -2977,6 +3023,7 @@ function bindEvents() {
   guessCancelButton.addEventListener("click", closeGuessModal);
   errorBackdropEl.addEventListener("click", closeErrorModal);
   errorDismissButton.addEventListener("click", closeErrorModal);
+  startButton.addEventListener("click", startPuzzle);
   finishBackdropEl.addEventListener("click", dismissFinishModal);
   finishDismissButton.addEventListener("click", dismissFinishModal);
   finishCopyButton.addEventListener("click", async () => {

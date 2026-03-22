@@ -190,6 +190,66 @@ test("3D progress and view state persist across reload", async ({ page }) => {
     .toEqual(beforeReload);
 });
 
+test("3D first load shows Start, reload with progress shows Resume, and completed puzzles skip the gate", async ({
+  page,
+}) => {
+  await open3D(page, "/3d/?seed=921d06880b8b&depth=2&rows=2&cols=2", { start: false });
+  await expect(page.locator("#start-button")).toHaveText("Start");
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => currentTimerElapsedMs())).toBe(0);
+
+  await page.click("#start-button");
+  await page.waitForTimeout(220);
+  const startedElapsed = await page.evaluate(() => currentTimerElapsedMs());
+  expect(startedElapsed).toBeGreaterThan(0);
+
+  await page.reload();
+  await expect(page.locator("#start-button")).toHaveText("Resume");
+  const beforeResume = await page.evaluate(() => currentTimerElapsedMs());
+  await page.waitForTimeout(250);
+  const stillPaused = await page.evaluate(() => currentTimerElapsedMs());
+  expect(stillPaused - beforeResume).toBeLessThan(80);
+
+  await page.click("#start-button");
+  await page.waitForTimeout(220);
+  const afterResume = await page.evaluate(() => currentTimerElapsedMs());
+  expect(afterResume - stillPaused).toBeGreaterThan(120);
+
+  await page.evaluate(async () => {
+    while (!allTilesMarked()) {
+      let solvedNext = false;
+
+      for (let layer = 0; layer < state.cells.length && !solvedNext; layer += 1) {
+        for (let row = 0; row < state.cells[layer].length && !solvedNext; row += 1) {
+          for (let col = 0; col < state.cells[layer][row].length && !solvedNext; col += 1) {
+            if (state.cells[layer][row][col].revealed) {
+              continue;
+            }
+
+            for (const guess of ["innocent", "criminal"]) {
+              state.modalCell = { layer, row, col };
+              try {
+                await revealGuess(guess);
+                solvedNext = true;
+                break;
+              } catch {}
+            }
+          }
+        }
+      }
+
+      if (!solvedNext) {
+        throw new Error("Could not find a forced move while solving the 3D puzzle.");
+      }
+    }
+  });
+
+  await page.reload();
+  await expect(page.locator("#start-modal")).toBeHidden();
+  await expect(page.locator("#finish-modal")).toBeHidden();
+  await expect(page.locator("#share-3d")).toHaveText("🏆 Share Results");
+});
+
 test("3D completion switches share to trophy mode and reopens the results modal", async ({
   page,
 }) => {

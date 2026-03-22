@@ -189,9 +189,17 @@ async function solveStored2DPuzzle(page, request, storedPuzzleId) {
   return opened;
 }
 
-async function open3D(page, url = "/3d/?seed=921d06880b8b&depth=2&rows=2&cols=2") {
+async function open3D(
+  page,
+  url = "/3d/?seed=921d06880b8b&depth=2&rows=2&cols=2",
+  { start = true } = {},
+) {
   await page.goto(url);
   await expect(page.locator("#board-3d-scene .three-d-face")).toHaveCount(48);
+  const startButton = page.locator("#start-button");
+  if (start && (await startButton.isVisible())) {
+    await startButton.click();
+  }
 }
 
 async function wheelOn(page, selector, deltaX, deltaY, ctrlKey = false) {

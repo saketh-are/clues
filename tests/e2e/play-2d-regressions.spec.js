@@ -129,6 +129,45 @@ test("2D timer pauses while the page is hidden and resumes on return", async ({ 
   expect(afterResume - whileHidden).toBeGreaterThan(120);
 });
 
+test("2D first load shows Start, reload with progress shows Resume, and timer waits for Resume", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await expect(page.locator("#start-button")).toHaveText("Start");
+  await page.waitForTimeout(250);
+  expect(await page.evaluate(() => currentTimerElapsedMs())).toBe(0);
+
+  await page.click("#start-button");
+  await page.waitForTimeout(220);
+  const startedElapsed = await page.evaluate(() => currentTimerElapsedMs());
+  expect(startedElapsed).toBeGreaterThan(0);
+
+  await page.reload();
+  await expect(page.locator("#start-button")).toHaveText("Resume");
+  const beforeResume = await page.evaluate(() => currentTimerElapsedMs());
+  await page.waitForTimeout(250);
+  const stillPaused = await page.evaluate(() => currentTimerElapsedMs());
+  expect(stillPaused - beforeResume).toBeLessThan(80);
+
+  await page.click("#start-button");
+  await page.waitForTimeout(220);
+  const afterResume = await page.evaluate(() => currentTimerElapsedMs());
+  expect(afterResume - stillPaused).toBeGreaterThan(120);
+});
+
+test("2D D shortcut closes popups before opening the hidden page", async ({ page }) => {
+  await start2D(page);
+  await page.locator("#board .cell.hidden-clue").first().click();
+  await expect(page.locator("#guess-modal")).toBeVisible();
+
+  await page.keyboard.press("d");
+
+  await expect(page.locator("#guess-modal")).toBeHidden();
+  await expect
+    .poll(() => page.evaluate(() => state.scoreDebugVisible))
+    .toBe(true);
+});
+
 test("wrong guesses show the evidence error, correct guesses clear notes, and completed share reopens results", async ({
   page,
   request,

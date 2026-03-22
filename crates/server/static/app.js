@@ -122,6 +122,7 @@ const state = {
   timerStartedAt: null,
   timerCompletedAt: null,
   completionAcknowledged: false,
+  timerSessionActivated: false,
   pendingConfirmAction: null,
   scoreDebugVisible: false,
   hoveredScoreMetric: null,
@@ -705,6 +706,7 @@ function resumeActiveTimerIfNeeded() {
     document.hidden ||
     state.timerCompletedAt !== null ||
     state.timerStartedAt !== null ||
+    !state.timerSessionActivated ||
     !hasStartedTimer() ||
     allTilesMarked()
   ) {
@@ -766,7 +768,19 @@ function dismissFinishModal() {
   closeFinishModal();
 }
 
+function hasResumeProgress() {
+  return (
+    hasStartedTimer() ||
+    state.moves.length > 0 ||
+    state.hiddenClues.size > 0 ||
+    state.notes.size > 0 ||
+    state.bottomNotes.size > 0 ||
+    state.mistakeTiles.size > 0
+  );
+}
+
 function startPuzzle() {
+  state.timerSessionActivated = true;
   if (!hasStartedTimer()) {
     state.timerElapsedMs = 0;
     state.timerStartedAt = Date.now();
@@ -1032,6 +1046,7 @@ async function loadPuzzle(seed, options = {}) {
   state.timerStartedAt = null;
   state.timerCompletedAt = null;
   state.completionAcknowledged = false;
+  state.timerSessionActivated = false;
   state.pendingTopNotePress = null;
   state.suppressedTopNoteClick = null;
   state.suppressedBottomNoteClick = null;
@@ -1072,12 +1087,11 @@ async function loadPuzzle(seed, options = {}) {
 
   syncShareButton();
 
-  if (allTilesMarked() && state.timerStartedAt !== null && !state.completionAcknowledged) {
-    openFinishModal();
+  if (allTilesMarked() && state.timerCompletedAt !== null) {
     return;
   }
 
-  if (!suppressStartModal && (forceStartModal || state.timerStartedAt === null)) {
+  if (!suppressStartModal && (forceStartModal || !state.timerSessionActivated)) {
     openStartModal();
   }
 }
@@ -2121,20 +2135,7 @@ async function restoreProgress() {
   state.timerStartedAt = saved.timerStartedAt;
   state.timerCompletedAt = saved.timerCompletedAt;
   state.completionAcknowledged = saved.completionAcknowledged;
-  if (
-    !hasStartedTimer() &&
-    (
-      saved.moves.length > 0 ||
-      saved.hiddenClues.length > 0 ||
-      saved.notes.length > 0 ||
-      saved.bottomNotes.length > 0 ||
-      saved.mistakeTiles.length > 0
-    )
-  ) {
-    if (!document.hidden) {
-      state.timerStartedAt = Date.now();
-    }
-  }
+  state.timerSessionActivated = false;
 
   try {
     for (const move of saved.moves) {
@@ -2179,7 +2180,6 @@ async function restoreProgress() {
     } else {
       state.timerCompletedAt = null;
       state.completionAcknowledged = false;
-      resumeActiveTimerIfNeeded();
     }
     persistProgress();
   } catch {
@@ -2192,6 +2192,7 @@ async function restoreProgress() {
     state.timerStartedAt = null;
     state.timerCompletedAt = null;
     state.completionAcknowledged = false;
+    state.timerSessionActivated = false;
     clearSavedProgress();
     return {
       restored: false,
@@ -2222,16 +2223,14 @@ async function setGuess(row, col, nextGuess) {
   renderBoard();
 
   try {
+    if (!state.timerSessionActivated) {
+      closeGuessModal();
+      openStartModal();
+      return;
+    }
+
     const clueResult = await fetchValidatedClue(row, col, nextGuess);
     applyAcceptedGuess(row, col, nextGuess, clueResult);
-    if (!hasStartedTimer()) {
-      state.timerElapsedMs = 0;
-      state.timerStartedAt = Date.now();
-      state.timerCompletedAt = null;
-      state.completionAcknowledged = false;
-    } else if (state.timerStartedAt === null && state.timerCompletedAt === null) {
-      state.timerStartedAt = Date.now();
-    }
     persistProgress();
     closeGuessModal();
     completePuzzleIfNeeded();
@@ -2326,6 +2325,7 @@ function closeErrorModal() {
 }
 
 function openStartModal() {
+  startButton.textContent = hasResumeProgress() ? "Resume" : "Start";
   closeCornerNoteMenu();
   closeGuessModal();
   closeConfirmModal();
@@ -2500,6 +2500,13 @@ window.addEventListener("keydown", (event) => {
 
   if (event.key.toLowerCase() === "d") {
     event.preventDefault();
+    closeCornerNoteMenu();
+    closeGuessModal();
+    closeConfirmModal();
+    closeNewPuzzleModal();
+    closeErrorModal();
+    closeStartModal();
+    closeFinishModal();
     toggleScoreDebugOverlay();
   }
 });
