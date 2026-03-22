@@ -173,7 +173,7 @@
   text-align: left;
   overflow: hidden;
   cursor: pointer;
-  pointer-events: none;
+  pointer-events: auto;
   -webkit-user-drag: none;
   will-change: transform;
 }
@@ -260,12 +260,12 @@
 }
 
 .three-d-face.tile-innocent {
-  background: linear-gradient(180deg, rgba(233, 248, 239, 0.96), rgba(221, 241, 229, 0.96));
+  background: rgb(226, 233, 223);
   border-color: rgba(45, 122, 83, 0.22);
 }
 
 .three-d-face.tile-criminal {
-  background: linear-gradient(180deg, rgba(252, 233, 229, 0.96), rgba(247, 219, 214, 0.96));
+  background: rgb(245, 224, 218);
   border-color: rgba(180, 60, 47, 0.22);
 }
 

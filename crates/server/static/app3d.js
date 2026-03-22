@@ -1797,7 +1797,7 @@ function projectedSceneBounds(rotationXDegrees, rotationYDegrees) {
 }
 
 function sceneVisualBounds() {
-  const faces = [...boardSceneEl.querySelectorAll(".three-d-face.is-interactive")];
+  const faces = [...boardSceneEl.querySelectorAll(".three-d-face")];
   if (faces.length === 0) {
     return null;
   }
@@ -2119,12 +2119,9 @@ function updateInteractiveFaces() {
 
 function faceAtClientPoint(clientX, clientY) {
   const elements = document.elementsFromPoint(clientX, clientY);
-  return (
-    elements.find(
-      (element) =>
-        element instanceof HTMLElement && element.matches(".three-d-face.is-interactive"),
-    ) ?? null
-  );
+  return elements.find(
+    (element) => element instanceof HTMLElement && element.matches(".three-d-face"),
+  ) ?? null;
 }
 
 function scheduleTextReorientation(delayMs = textReorientationDelayMs) {
@@ -2782,7 +2779,7 @@ function beginDrag(event) {
   clearTextReorientationTimer();
   clearViewCompensationFrame();
   const targetFace =
-    event.target.closest?.(".three-d-face.is-interactive") ??
+    event.target.closest?.(".three-d-face") ??
     faceAtClientPoint(event.clientX, event.clientY) ??
     null;
   state.drag = {
